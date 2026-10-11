@@ -116,6 +116,7 @@ static char edit_buf[24] = "";
 static uint16_t setlist_seen = 0;
 static bool set_verify = false;         // a changed value is waiting for its confirmation
 static uint32_t set_verify_at = 0;
+static bool move_from_main = false;     // Move was opened from the position card, back returns to main
 static int pending_screen = -1;         // screen change requested from a list row event
 
 // WiFi
@@ -656,6 +657,15 @@ static void build_main (lv_obj_t *s)
     lv_obj_set_style_text_font(b_view->icon, &lv_font_montserrat_14, 0);
 
     dro_card = glass(s, 206, 42, 266, CARD_H, 16);
+    // tapping the position card opens the Move screen
+    lv_obj_add_flag(dro_card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_border_width(dro_card, 2, LV_STATE_PRESSED);
+    lv_obj_set_style_border_opa(dro_card, 200, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(dro_card, [](lv_event_t *e) {
+        beep_click();
+        action_run(A_ScrMove, 0);
+        move_from_main = true;
+    }, LV_EVENT_CLICKED, NULL);
     for(int i = 0; i < 3; i++) {
         int y = 8 + i * 46;
         lv_obj_t *badge = box(dro_card, 10, y + 6, 30, 30);
@@ -1228,7 +1238,7 @@ static void action_run (int action, int arg)
     switch(action) {
         case A_Menu:        screen_show(S_Menu); break;
         case A_Back:
-            screen_show(screen == S_Menu ? S_Main : screen == S_SetEdit ? S_SetList :
+            screen_show(screen == S_Menu || (screen == S_Move && move_from_main) ? S_Main : screen == S_SetEdit ? S_SetList :
                         screen == S_SetList ? S_SetGroups : S_Menu);
             break;
         case A_ScrSettings: screen_show(S_SetGroups); break;
@@ -1314,7 +1324,7 @@ static void action_run (int action, int arg)
                 spindle_stop_sent = false;
             }
             break;
-        case A_ScrMove:     screen_show(S_Move); break;
+        case A_ScrMove:     move_from_main = false; screen_show(S_Move); break;
         case A_ScrProbe:    screen_show(S_Probe); break;
         case A_ScrLaser:    screen_show(S_Laser); break;
         case A_ScrSd:       screen_show(S_Sd); break;
