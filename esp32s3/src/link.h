@@ -138,13 +138,6 @@ void link_setting (uint16_t id);        // request one setting again
 
 void link_preview (const char *name);   // request the preview of an SD file, "" clears it
 
-struct link_stats_t {
-    uint32_t rx_bytes, lines_ok, lines_bad;
-    char last[40];          // start of the last received line
-};
-
-extern link_stats_t link_stats;
-
 void link_begin (void);
 void link_poll (void);
 void link_rt (uint8_t cmd);

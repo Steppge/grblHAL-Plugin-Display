@@ -78,7 +78,7 @@ The TS35 is connected with its two EXP ribbon cables. Wire numbers count from th
 | EXP1 | 6 | Touch CS | GPIO8 |
 | EXP1 | 7 | LCD reset | GPIO14 |
 | EXP1 | 8 | Backlight | GPIO21 |
-| EXP1 | 10 | Beeper | GPIO15 |
+| EXP1 | 10 | Beeper | GPIO7 |
 | EXP2 | 2 | GND | GND |
 | EXP2 | 5 | SPI MOSI | GPIO11 |
 | EXP2 | 9 | SPI SCK | GPIO12 |

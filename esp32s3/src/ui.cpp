@@ -1625,11 +1625,6 @@ void ui_update (void)
     update_screen();
 }
 
-void ui_debug (char *buf, size_t len)
-{
-    map_debug(buf, len, &map_v);
-}
-
 void ui_init (void)
 {
     prefs.begin("ui", false);

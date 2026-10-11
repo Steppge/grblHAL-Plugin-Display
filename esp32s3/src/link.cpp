@@ -11,7 +11,6 @@
 #define HEARTBEAT_MS        500     // the controller sees the display as connected
 
 machine_t mc = {};
-link_stats_t link_stats = {};
 file_list_t files = {};
 preview_t preview = {};
 settings_list_t setlist = {};
@@ -206,22 +205,15 @@ static void handle_line (char *line)
     char *star = strrchr(line, '*');
     uint8_t sum = 0;
 
-    strlcpy(link_stats.last, line, sizeof(link_stats.last));
-
-    if(star == NULL) {
-        link_stats.lines_bad++;
+    if(star == NULL)
         return;
-    }
 
     *star = '\0';
     for(char *p = line; *p; p++)
         sum ^= (uint8_t)*p;
 
-    if(strtoul(star + 1, NULL, 16) != sum) {
-        link_stats.lines_bad++;
+    if(strtoul(star + 1, NULL, 16) != sum)
         return;
-    }
-    link_stats.lines_ok++;
 
     if(!strncmp(line, "DS,", 3))
         handle_status(line + 3);
@@ -325,7 +317,6 @@ void link_poll (void)
 
     while(port.available()) {
         int c = port.read();
-        link_stats.rx_bytes++;
         if(c == '$')
             len = 0;
         else if(c == '\n' || c == '\r') {

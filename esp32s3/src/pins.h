@@ -11,7 +11,7 @@
 #define PIN_TFT_BL      21  // Octopus EXP1-3
 #define PIN_TOUCH_CS     8  // Octopus EXP1-5
 #define PIN_TOUCH_INT   18  // Octopus EXP1-6
-#define PIN_BEEPER      15  // Octopus EXP1-1 (gray cable: EXP1 wire 10)
+#define PIN_BEEPER       7  // Octopus EXP1-1 (gray cable: EXP1 wire 10)
 
 // Link to the Octopus USART2 header (PD5 TX2 / PD6 RX2 next to USB-C, grblHAL stream instance 1)
 #define PIN_LINK_TX     17  // to Octopus PD6 (RX)

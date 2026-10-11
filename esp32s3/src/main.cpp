@@ -145,16 +145,5 @@ void loop (void)
         lcd.endWrite();
     }
 
-    // link diagnostics on the console once a second
-    static uint32_t last_diag = 0;
-    if(millis() - last_diag >= 1000) {
-        last_diag = millis();
-        Serial.printf("link: rx %lu bytes, %lu lines ok, %lu bad, online %d, last \"%s\"\n", (unsigned long)link_stats.rx_bytes,
-                      (unsigned long)link_stats.lines_ok, (unsigned long)link_stats.lines_bad, mc.online, link_stats.last);
-        char dbg[256];
-        ui_debug(dbg, sizeof(dbg));
-        Serial.printf("map: %s\n", dbg);
-    }
-
     delay(2);
 }

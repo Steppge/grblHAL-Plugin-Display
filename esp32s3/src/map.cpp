@@ -152,13 +152,6 @@ void map_record (void)
     changed = true;     // the tool moves
 }
 
-void map_debug (char *buf, size_t len, const map_view_t *v)
-{
-    snprintf(buf, len, "extent X %.1f..%.1f Y %.1f..%.1f (env %d), WCO %.1f %.1f, view x0 %.1f y0 %.1f scale %.3f %dx%d, preview %d %.1f..%.1f %.1f..%.1f",
-             ex0, ex1, ey0, ey1, mc.env_valid, wco_x(), wco_y(), v->x0, v->y0, v->scale, v->w, v->h,
-             preview.valid, preview.x0, preview.x1, preview.y0, preview.y1);
-}
-
 bool map_changed (void)
 {
     if(preview.seq != preview_seq) {
