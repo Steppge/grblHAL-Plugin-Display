@@ -106,7 +106,7 @@ Supply: 5 V from the controller board (e.g. EXP1 5V/GND of the Octopus) to 5Vin 
   default (EXP1). On the V2.0_002 board the LCD data output is not connected, reading the panel ID returns FFFFFFFF.
 - LVGL renders RGB565 little endian, the flush must hand it to LovyanGFX as `lgfx::rgb565_t`, otherwise colors
   are wrong and gradients show rings.
-- The beeper draws noticeable current: on USB power the USB serial chip of the ESP32-S3 board may drop out.
+- With the beeper on GPIO15 the USB connection of the ESP32-S3 board dropped out now and then, on GPIO7 it is stable.
 - Map orientation: `MAP_X_LEFT` and `MAP_Y_DOWN` in `esp32s3/src/map.cpp` (defaults for a machine with +X to
   the left and +Y to the front, seen from the front).
 
