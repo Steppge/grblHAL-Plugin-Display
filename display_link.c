@@ -21,6 +21,8 @@
   v0.1 - machine status to the display, realtime commands and command lines from it,
          SD card file list, laser test pulse, G-code preview, settings, error reports,
          sender (LightBurn) over WiFi on a second UART.
+  v1.0 - gamepad button learn mode (>GL, $GK), released together with the display firmware 1.0
+         (web interface, firmware update in the browser).
 
   An ESP32-S3 with an MKS TS35 (see esp32s3/) is connected to a serial port of the controller
   board (DISPLAY_LINK_STREAM; BTT Octopus Pro: USART2 = PD5 TX2 / PD6 RX2 header next to USB-C, stream instance 1).
@@ -110,7 +112,7 @@
 #include "sdcard/fs_stream.h"
 #endif
 
-#define DL_VERSION "0.1"
+#define DL_VERSION "1.0"
 
 #ifndef DISPLAY_LINK_STREAM
 #define DISPLAY_LINK_STREAM     1

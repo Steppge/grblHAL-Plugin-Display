@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <mbedtls/sha256.h>
+#include <esp_app_desc.h>
 #include "web.h"
 #include "wlan.h"
 #include "link.h"
@@ -15,6 +16,7 @@
 #define LOGIN_PAUSE_MS  2000    // after a wrong password further attempts are refused this long
 
 static WebServer *srv = NULL;
+static bool may_control (void);
 static bool stop_req = false, spindle_stop_sent = false, unlock_pending = false;
 static uint32_t unlock_at = 0, login_failed_at = 0;
 
@@ -67,6 +69,11 @@ static String web_token (void)
     return String(hex);
 }
 
+bool web_may_control (void)
+{
+    return srv && may_control();
+}
+
 static bool may_control (void)
 {
     return wifi_web_mode() == Web_Control && *wifi_cfg.ota && srv->header("X-Token") == web_token();
@@ -98,7 +105,7 @@ static void h_index (void)
 
 static void h_status (void)
 {
-    char job[100], sel[140], ref[100], msg[140], host[70], b[1500];
+    char job[100], sel[140], ref[100], msg[140], host[70], fw[9], b[1550];
 
     if(!web_on())
         return;
@@ -108,6 +115,7 @@ static void h_status (void)
     jstr(ref, sizeof(ref), mc.refused);
     jstr(msg, sizeof(msg), mc.msg);
     jstr(host, sizeof(host), wifi_host());
+    esp_app_get_elf_sha256(fw, sizeof(fw));     // changes with every build: shows which firmware runs
 
     snprintf(b, sizeof(b),
         "{\"on\":%d,\"st\":%lu,\"al\":%u,\"fl\":%u,\"w\":[%.3f,%.3f,%.3f],\"m\":[%.3f,%.3f,%.3f],"
@@ -115,7 +123,7 @@ static void h_status (void)
         "\"tr\":[%.1f,%.1f,%.1f],\"env\":[%d,%.1f,%.1f,%.1f,%.1f,%.1f],\"smax\":%.0f,"
         "\"snd\":%d,\"web\":%u,\"ctl\":%d,\"pv\":%u,\"pvl\":%d,\"pvok\":%d,\"sel\":\"%s\","
         "\"es\":%u,\"ec\":%u,\"ej\":%d,\"rs\":%u,\"rf\":\"%s\",\"ms\":%u,\"msg\":\"%s\","
-        "\"host\":\"%s\",\"xl\":%d,\"yd\":%d}",
+        "\"host\":\"%s\",\"xl\":%d,\"yd\":%d,\"fw\":\"%s\"}",
         mc.online ? 1 : 0, (unsigned long)mc.state, mc.alarm, mc.flags,
         mc.wpos[0], mc.wpos[1], mc.wpos[2], mc.mpos[0], mc.mpos[1], mc.mpos[2],
         mc.feed, mc.s, mc.ov_feed, mc.ov_rapid, mc.ov_spindle, mc.pct, mc.mode, mc.wcs, job,
@@ -124,7 +132,7 @@ static void h_status (void)
         wifi_sender() ? 1 : 0, wifi_web_mode(), may_control() ? 1 : 0, preview.seq, preview.loading ? 1 : 0,
         preview.valid ? 1 : 0, sel,
         mc.err_seq, mc.err_code, mc.err_job ? 1 : 0, mc.refused_seq, ref, mc.msg_seq, msg,
-        host, MAP_X_LEFT, MAP_Y_DOWN);
+        host, MAP_X_LEFT, MAP_Y_DOWN, fw);
 
     reply_json(b);
 }

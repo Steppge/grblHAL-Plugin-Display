@@ -141,6 +141,7 @@ body {
       <div class="tab on" data-v="main">Main</div>
       <div class="tab" data-v="jog">Move</div>
       <div class="tab" data-v="sd">SD card</div>
+      <div class="tab" data-v="fw">Update</div>
       <div id="lock">View only</div>
     </div>
   </div>
@@ -177,6 +178,22 @@ body {
     <div class="card" id="sdList"></div>
     <div id="sdMsg"></div>
     <div id="sdBtns"></div>
+  </div>
+
+  <div class="view" id="fw">
+    <div class="card" style="padding:16px">
+      <div style="font-size:20px;font-weight:700">Firmware update of the display</div>
+      <div class="muted" style="margin:6px 0 14px">The file <b>firmware.bin</b> of the display (release: <b>...-update.bin</b>).
+        Only while the machine is idle, in alarm or not connected. The display restarts afterwards.</div>
+      <input type="file" id="fwFile" accept=".bin" style="font-size:16px;color:#fff">
+      <div id="fwInfo" class="muted" style="margin-top:8px"></div>
+      <div id="fwTrack" style="height:12px;border-radius:6px;background:var(--track);margin:16px 0 8px">
+        <div id="fwBar" style="height:12px;border-radius:6px;width:0;background:linear-gradient(90deg,var(--ring1),var(--ring2))"></div>
+      </div>
+      <div id="fwMsg" style="min-height:24px"></div>
+      <div id="fwId" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div style="display:flex;height:76px"><div class="b" id="fwBtn"></div></div>
   </div>
 </div>
 
@@ -439,6 +456,50 @@ function updateSd() {
   setBtn(sdBtns[0], '&#8635;', 'Refresh', '', { tap: sdRefresh }, true, false);
   setBtn(sdBtns[1], '&#10003;', 'Load', 'green', { tap: function () { showView('main'); } }, idle && !!S.sel, false);
   if(S.sel !== sdFill._sel) { sdFill._sel = S.sel; sdFill(); }
+}
+
+// firmware update: the file goes to /update with the token of this browser
+var fwFile = null, fwBusy = false, fwRestart = false, fwBefore = '';
+$('fwFile').onchange = function () {
+  fwFile = this.files && this.files[0] || null;
+  txt($('fwInfo'), fwFile ? fwFile.name + '  -  ' + Math.round(fwFile.size / 1024) + ' KB' : '');
+  $('fwBar').style.width = '0';
+  txt($('fwMsg'), '');
+};
+function fwUpload() {
+  if(!fwFile || fwBusy) return;
+  var fd = new FormData(), x = new XMLHttpRequest();
+  fd.append('firmware', fwFile, fwFile.name);
+  x.open('POST', '/update?size=' + fwFile.size, true);
+  fwBefore = S ? S.fw : '';
+  x.setRequestHeader('X-Token', token);
+  x.upload.onprogress = function (e) {
+    if(e.lengthComputable) {
+      var pct = Math.round(e.loaded * 100 / e.total);
+      $('fwBar').style.width = pct + '%';
+      // the browser counts what it has sent, the display may still be writing
+      txt($('fwMsg'), pct < 100 ? 'Uploading ' + pct + ' %' : 'Writing on the display...');
+    }
+  };
+  x.onload = function () {
+    fwBusy = false;
+    if(x.status === 200) { fwRestart = true; txt($('fwMsg'), 'Done - the display restarts...'); }
+    else { $('fwBar').style.width = '0'; txt($('fwMsg'), x.responseText || 'Update failed'); }
+  };
+  x.onerror = function () { fwBusy = false; txt($('fwMsg'), 'Connection lost'); };
+  fwBusy = true;
+  txt($('fwMsg'), 'Uploading...');
+  x.send(fd);
+}
+function updateFw() {
+  var free = !S.on || S.st === 0 || !!(S.st & (ST_ALARM | ST_ESTOP));
+  if(fwRestart && !fwBusy) {
+    fwRestart = false;
+    txt($('fwMsg'), S.fw !== fwBefore ? 'Updated - the new firmware ' + S.fw + ' runs' : 'The display is back - same firmware ' + S.fw);
+  }
+  txt($('fwId'), 'Running firmware: ' + (S.fw || '?'));
+  setBtn($('fwBtn'), '&#8679;', fwBusy ? 'Uploading...' : 'Update (hold)', 'orange', { hold: fwUpload }, !!fwFile && !fwBusy && free);
+  if(!free && !fwBusy) txt($('fwMsg'), 'Not now: the machine is busy');
 }
 
 // ---------------------------------------------------------------- main screen
@@ -718,6 +779,7 @@ function onStatus(s) {
   if(view === 'main' || zoomOn) updateMain();
   if(view === 'jog') updateJog();
   if(view === 'sd') updateSd();
+  if(view === 'fw') updateFw();
   draw();
 }
 

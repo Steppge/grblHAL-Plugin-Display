@@ -14,10 +14,12 @@
 wifi_cfg_t wifi_cfg = {};
 
 static Preferences prefs;
-// Browsers (Chrome on Android in particular) open spare connections that send nothing at first.
-// WebServer serves one connection at a time and waits up to 5 s for a request on such a socket,
-// the page's status requests time out meanwhile. A connection without a request is dropped early.
-#define HTTP_IDLE_DROP_MS 500
+// Browsers (Chrome on Android in particular) keep spare connections open that send nothing at first.
+// WebServer serves one connection at a time and would wait up to 5 s for a request on such a socket while
+// the other requests queue up. A connection without a request is parked as soon as another one waits,
+// and served once its request arrives; parked connections are closed after HTTP_PARK_MS.
+#define HTTP_PARK_MAX     4
+#define HTTP_PARK_MS   5000
 
 class FastWebServer : public WebServer {
 public:
@@ -25,13 +27,60 @@ public:
 
     void handleClient (void) override
     {
+        uint32_t now = millis();
+
         if(_currentStatus == HC_WAIT_READ && _currentClient && !_currentClient.available() &&
-            millis() - _statusChange > HTTP_IDLE_DROP_MS) {
-            _currentClient.stop();
+            (_server.hasClient() || parked_ready())) {
+            int i = free_slot();
+            if(i >= 0) {
+                parked[i] = _currentClient;
+                parked_at[i] = _statusChange;
+            } else
+                _currentClient.stop();
             _currentClient = NetworkClient();
             _currentStatus = HC_NONE;
         }
+
+        if(_currentStatus == HC_NONE) {
+            for(int i = 0; i < HTTP_PARK_MAX; i++) {
+                if(!parked[i])
+                    continue;
+                if(!parked[i].connected() || now - parked_at[i] > HTTP_PARK_MS) {
+                    parked[i].stop();
+                    parked[i] = NetworkClient();
+                } else if(parked[i].available()) {
+                    _currentClient = parked[i];
+                    parked[i] = NetworkClient();
+                    _currentStatus = HC_WAIT_READ;
+                    _statusChange = now;
+                    break;
+                }
+            }
+        }
+
         WebServer::handleClient();
+    }
+
+private:
+    NetworkClient parked[HTTP_PARK_MAX];
+    uint32_t parked_at[HTTP_PARK_MAX] = {};
+
+    bool parked_ready (void)
+    {
+        for(int i = 0; i < HTTP_PARK_MAX; i++) {
+            if(parked[i] && parked[i].available())
+                return true;
+        }
+        return false;
+    }
+
+    int free_slot (void)
+    {
+        for(int i = 0; i < HTTP_PARK_MAX; i++) {
+            if(!parked[i])
+                return i;
+        }
+        return -1;
     }
 };
 
@@ -118,9 +167,10 @@ static const char update_page[] =
     "<form method=POST action=/update enctype=multipart/form-data><input type=file name=firmware accept=.bin><br>"
     "<button>Update</button></form></body></html>";
 
+// the OTA password (upload page) or the token of a browser logged in for control (web interface)
 static bool update_auth (void)
 {
-    return *wifi_cfg.ota && server.authenticate("admin", wifi_cfg.ota);
+    return *wifi_cfg.ota && (web_may_control() || server.authenticate("admin", wifi_cfg.ota));
 }
 
 static void update_setup (void)
@@ -142,8 +192,12 @@ static void update_setup (void)
         }
     }, []() {
         HTTPUpload &up = server.upload();
-        if(up.status == UPLOAD_FILE_START)
-            upload_ok = update_auth() && updates_ok && Update.begin(UPDATE_SIZE_UNKNOWN);
+        if(up.status == UPLOAD_FILE_START) {
+            // with the file size (web interface: /update?size=n) the progress counts to the end of the file,
+            // without it to the end of the partition
+            long size = server.hasArg("size") ? server.arg("size").toInt() : 0;
+            upload_ok = update_auth() && updates_ok && Update.begin(size > 0 ? (size_t)size : UPDATE_SIZE_UNKNOWN);
+        }
         else if(up.status == UPLOAD_FILE_WRITE) {
             if(upload_ok && Update.write(up.buf, up.currentSize) != up.currentSize)
                 upload_ok = false;

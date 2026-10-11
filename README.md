@@ -71,6 +71,9 @@ Once flashed over USB, the ESP32-S3 can be updated over WiFi:
    `GRBLHAL_DISPLAY_OTA` (Windows: `setx GRBLHAL_DISPLAY_OTA "..."`, then restart VS Code). The ESP32-S3
    connects back to the PC for the data, allow Python in the firewall (Windows asks on the first upload).
 3. Or in a browser: `http://grblhal-display.local/update`, user `admin`, the OTA password, choose `firmware.bin`.
+4. Or in the web interface (logged in for control): tab Update, choose `firmware.bin`, hold Update. The page shows
+   the upload, the display the writing; afterwards the tab shows the ID of the running firmware, which changes
+   with every build.
 
 ### LightBurn (or another sender) over WiFi
 
