@@ -28,7 +28,7 @@ The plugin only uses grblHAL core APIs and is not tied to a driver or MCU.
   map card and X/Y/Z card; six buttons that change between idle and job:
   - idle: Home (hold), Unlock / Reset / Hold 3s, X0 Y0 (hold), Z0 (hold), Hold, Load / Start (hold)
   - job: Feed -/+ and Power -/+ (tap ±10 %, hold 100 %), Hold / Stop (hold), Resume
-- **Map**: the machine area with a frame, the live trace of the tool while the laser/spindle is on, the tool
+- **Map**: a Z height bar on the right (tool in cyan, work zero in yellow); the machine area with a frame, the live trace of the tool while the laser/spindle is on, the tool
   crosshair and the G54 origin. After a file has been loaded it switches to the **G-code preview** (to do: beige,
   done: colored). The button next to the zoom button toggles between preview and machine area.
 - **Zoom**: the map full screen with two buttons, back and STOP. First tap on STOP: feed hold, the laser/spindle

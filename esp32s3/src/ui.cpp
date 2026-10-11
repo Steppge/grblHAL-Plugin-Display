@@ -116,6 +116,13 @@ static char edit_buf[24] = "";
 static uint16_t setlist_seen = 0;
 static bool set_verify = false;         // a changed value is waiting for its confirmation
 static uint32_t set_verify_at = 0;
+// Z height bar next to the map: machine Z range, work zero (yellow) and the tool (cyan)
+struct zbar_t {
+    lv_obj_t *track, *zero, *mark;
+    int h;
+};
+static zbar_t zbar_main, zbar_zoom;
+
 static bool move_from_main = false;     // Move was opened from the position card, back returns to main
 static int pending_screen = -1;         // screen change requested from a list row event
 
@@ -582,6 +589,53 @@ static void expand_icon (lv_obj_t *parent)
 }
 
 // The map card is exactly as wide as the machine area, the position card takes the rest.
+static void zbar_make (zbar_t *z, lv_obj_t *parent, int x, int y, int h)
+{
+    z->h = h;
+    z->track = box(parent, x, y, 8, h);
+    lv_obj_set_style_radius(z->track, 4, 0);
+    lv_obj_set_style_bg_color(z->track, C(COL_TRACK), 0);
+    lv_obj_set_style_bg_opa(z->track, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(z->track, LV_OBJ_FLAG_CLICKABLE);
+
+    z->zero = box(z->track, -3, 0, 14, 2);
+    lv_obj_set_style_bg_color(z->zero, C(COL_PWR), 0);
+    lv_obj_set_style_bg_opa(z->zero, LV_OPA_COVER, 0);
+    lv_obj_add_flag(z->track, LV_OBJ_FLAG_OVERFLOW_VISIBLE);    // marks are wider than the track
+
+    z->mark = box(z->track, -4, 0, 16, 6);
+    lv_obj_set_style_radius(z->mark, 3, 0);
+    lv_obj_set_style_bg_color(z->mark, C(COL_RING1), 0);
+    lv_obj_set_style_bg_opa(z->mark, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_color(z->mark, C(COL_RING1), 0);
+    lv_obj_set_style_shadow_width(z->mark, 10, 0);
+    lv_obj_set_style_shadow_opa(z->mark, 180, 0);
+}
+
+static void zbar_update (zbar_t *z)
+{
+    float t = mc.travel[2] > 1.0f ? mc.travel[2] : 100.0f, zmin, zmax;
+
+    // machine Z range: from the work envelope once homed, else from the side of zero the position is on
+    if(mc.env_valid && mc.env_min[2] < -0.5f) {
+        zmin = mc.env_min[2];
+        zmax = zmin + t;
+    } else {
+        zmin = mc.mpos[2] > 0.5f ? 0.0f : -t;
+        zmax = zmin + t;
+    }
+
+    float f = constrain((mc.mpos[2] - zmin) / (zmax - zmin), 0.0f, 1.0f);
+    lv_obj_set_y(z->mark, (int)lroundf((1.0f - f) * (z->h - 6)));
+
+    float z0 = mc.mpos[2] - mc.wpos[2];     // work zero in machine coordinates
+    bool in = z0 >= zmin && z0 <= zmax;
+    show(z->zero, mc.online && in);
+    if(in)
+        lv_obj_set_y(z->zero, (int)lroundf((1.0f - (z0 - zmin) / (zmax - zmin)) * (z->h - 2)));
+    show(z->mark, mc.online);
+}
+
 static void layout_main (void)
 {
     float x0, y0, x1, y1;
@@ -598,11 +652,13 @@ static void layout_main (void)
     map_buf = (uint16_t *)ps_malloc(w * h * 2);
     lv_canvas_set_buffer(map_canvas, map_buf, w, h, LV_COLOR_FORMAT_RGB565);
 
-    lv_obj_set_width(map_card, w + 12);
-    lv_obj_set_pos(b_zoom->obj, w + 12 - 40, CARD_H - 40);
-    lv_obj_set_pos(b_view->obj, w + 12 - 78, CARD_H - 40);
-    lv_obj_set_pos(dro_card, 8 + w + 12 + 8, 42);
-    int dw = SCR_W - 8 - (8 + w + 12 + 8);
+    // canvas, then the Z bar on the right
+    lv_obj_set_width(map_card, w + 26);
+    lv_obj_set_x(zbar_main.track, w + 12);
+    lv_obj_set_pos(b_zoom->obj, w + 6 - 38, CARD_H - 40);
+    lv_obj_set_pos(b_view->obj, w + 6 - 76, CARD_H - 40);
+    lv_obj_set_pos(dro_card, 8 + w + 26 + 8, 42);
+    int dw = SCR_W - 8 - (8 + w + 26 + 8);
     lv_obj_set_width(dro_card, dw);
     for(int i = 0; i < 3; i++)
         lv_obj_set_width(dro_val[i], dw - 50);
@@ -645,6 +701,7 @@ static void build_main (lv_obj_t *s)
     lv_obj_set_style_radius(map_canvas, 10, 0);
     lv_obj_set_style_clip_corner(map_canvas, true, 0);
     crosshair(map_card, 9, &tool_h, &tool_v, &tool_c);
+    zbar_make(&zbar_main, map_card, 180, 6, CARD_H - 12);
     map_name = label(map_card, &lv_font_montserrat_12, 0xD2D7F0, "");
     lv_obj_set_pos(map_name, 12, 9);
     b_zoom = btn(map_card, 150, CARD_H - 40, 32, 32, 16, NULL, NULL, 0, 0, A_Zoom);
@@ -707,6 +764,7 @@ static void build_zoom (lv_obj_t *s)
 {
     zoom_buf = (uint16_t *)ps_malloc(SCR_W * SCR_H * 2);
     zoom_canvas = lv_canvas_create(s);
+    zbar_make(&zbar_zoom, s, 466, 50, 160);
     lv_canvas_set_buffer(zoom_canvas, zoom_buf, SCR_W, SCR_H, LV_COLOR_FORMAT_RGB565);
     lv_obj_set_pos(zoom_canvas, 0, 0);
     crosshair(s, 16, &ztool_h, &ztool_v, &ztool_c);
@@ -1560,6 +1618,7 @@ static void update_main (void)
         last_map = millis();
     }
     crosshair_move(&map_v, tool_h, tool_v, tool_c, 6, 6);
+    zbar_update(&zbar_main);
 }
 
 static void update_zoom (void)
@@ -1602,6 +1661,7 @@ static void update_zoom (void)
         last_map = millis();
     }
     crosshair_move(&zoom_v, ztool_h, ztool_v, ztool_c, 0, 0);
+    zbar_update(&zbar_zoom);
 }
 
 static void update_screen (void)
