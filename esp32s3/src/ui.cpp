@@ -13,6 +13,7 @@
 #include "map.h"
 #include "theme.h"
 #include "beep.h"
+#include "wlan.h"
 
 #define LONG_PRESS_MS       600     // buttons that move the machine or change offsets
 #define FORCE_UNLOCK_MS    3000     // unlock without homing ($22 override locks)
@@ -38,10 +39,11 @@ enum action_t {
     A_PlateDn, A_PlateUp, A_PFeedDn, A_PFeedUp, A_Probe,
     A_LPwrDn, A_LPwrUp, A_LTimeDn, A_LTimeUp, A_Fire,
     A_SdRefresh, A_SdRun, A_SdPick,
-    A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset
+    A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset,
+    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan
 };
 
-enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Count };
+enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Wifi, S_Count };
 
 struct ui_btn_t {
     lv_obj_t *obj, *icon, *text, *bar;
@@ -115,6 +117,12 @@ static uint16_t setlist_seen = 0;
 static bool set_verify = false;         // a changed value is waiting for its confirmation
 static uint32_t set_verify_at = 0;
 static int pending_screen = -1;         // screen change requested from a list row event
+
+// WiFi
+static lv_obj_t *lbl_wifi, *wifi_status, *wifi_dd, *wifi_ta[3], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
+static lv_obj_t *wifi_form;             // everything but the keyboard, moved up while typing
+static bool wifi_scanning = false;
+static ui_btn_t *b_wifi_toggle;
 static ui_btn_t *b_sd_run;
 static char sd_sel[64] = "";
 static uint16_t files_seq = 0, msg_seq = 0;
@@ -478,6 +486,7 @@ static void screen_show (screen_t s)
     show(lbl_pwr, top);
     show(lbl_wcs, top);
     show(lbl_link, top);
+    show(lbl_wifi, top);
     if(s == S_Main)
         btn_set(b_menu, LV_SYMBOL_LIST, NULL, 0, 0, A_Menu);
     else
@@ -492,6 +501,14 @@ static void screen_show (screen_t s)
         setlist_seen = setlist.seq - 1;     // rebuild the list
     if(s == S_SetEdit && set_cur >= 0)
         strlcpy(edit_buf, setlist.item[set_cur].value, sizeof(edit_buf));
+
+    if(s == S_Wifi) {
+        action_run(A_WifiScan, 0);
+        lv_textarea_set_text(wifi_ta[1], wifi_cfg.pass);
+        lv_textarea_set_text(wifi_ta[2], wifi_cfg.ota);
+        show(wifi_kb, false);
+        lv_obj_set_y(wifi_form, 0);
+    }
 
     if(s == S_Sd) {
         files.count = 0;
@@ -610,6 +627,8 @@ static void build_topbar (lv_obj_t *s)
     lv_obj_set_pos(lbl_pwr, 268, 12);
     lbl_wcs = label(s, &lv_font_montserrat_16, COL_WCS, "G54");
     lv_obj_set_pos(lbl_wcs, 370, 12);
+    lbl_wifi = label(s, &lv_font_montserrat_16, 0x50506E, LV_SYMBOL_WIFI);
+    lv_obj_set_pos(lbl_wifi, 420, 12);
     lbl_link = label(s, &lv_font_montserrat_16, COL_RED1, LV_SYMBOL_CLOSE);
     lv_obj_set_pos(lbl_link, 450, 12);
 }
@@ -712,7 +731,7 @@ static void build_menu (lv_obj_t *s)
         { LV_SYMBOL_CHARGE,   "Laser",   COL_PWR1,  COL_PWR2,  A_ScrLaser, A_None },
         { LV_SYMBOL_SD_CARD,  "SD card", COL_PWR1,  COL_PWR2,  A_ScrSd,    A_None },
         { LV_SYMBOL_SETTINGS, "Settings", COL_GREEN1, COL_GREEN2, A_ScrSettings, A_None },
-        { LV_SYMBOL_REFRESH,  "Unlock",  0, 0,                 A_Unlock,   A_None },
+        { LV_SYMBOL_WIFI,     "WiFi",    0, 0,                 A_ScrWifi,  A_None },
     };
 
     for(int i = 0; i < 6; i++)
@@ -974,6 +993,87 @@ static void update_edit (void)
     }
 }
 
+static void build_wifi (lv_obj_t *scr)
+{
+    static const char *names[3] = { "Network", "Password", "OTA password" };
+    lv_obj_t *s = wifi_form = box(scr, 0, 0, SCR_W, SCR_H);
+
+    wifi_status = label(s, &lv_font_montserrat_16, COL_TEXT, "");
+    lv_label_set_long_mode(wifi_status, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(wifi_status, 330);
+    lv_obj_set_pos(wifi_status, 16, 54);
+    b_wifi_toggle = btn(s, 360, 44, 112, 40, 12, LV_SYMBOL_POWER, NULL, 0, 0, A_WifiToggle);
+
+    wifi_kb = lv_keyboard_create(scr);
+    lv_obj_set_size(wifi_kb, SCR_W, 170);
+    lv_obj_align(wifi_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    show(wifi_kb, false);
+    lv_obj_add_event_cb(wifi_kb, [](lv_event_t *e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        if(code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+            show(wifi_kb, false);
+            lv_obj_set_y(wifi_form, 0);
+        }
+    }, LV_EVENT_ALL, NULL);
+
+    // the network is picked from a scan, only the passwords are typed
+    wifi_dd = lv_dropdown_create(s);
+    lv_obj_set_style_text_font(wifi_dd, &lv_font_montserrat_16, 0);
+    lv_obj_set_size(wifi_dd, 206, 42);
+    lv_obj_set_pos(wifi_dd, 146, 92);
+    lv_dropdown_set_options(wifi_dd, "");
+    btn(s, 360, 92, 112, 42, 12, LV_SYMBOL_REFRESH, "Scan", 0, 0, A_WifiScan);
+
+    for(int i = 0; i < 3; i++) {
+        lv_obj_t *l = label(s, &lv_font_montserrat_16, COL_MUTED, names[i]);
+        lv_obj_set_pos(l, 16, 104 + i * 48);
+        if(i == 0)
+            continue;   // network: dropdown above
+        lv_obj_t *ta = wifi_ta[i] = lv_textarea_create(s);
+        lv_textarea_set_one_line(ta, true);
+        lv_textarea_set_password_mode(ta, false);   // visible while typing
+        lv_textarea_set_max_length(ta, i == 1 ? 64 : 32);
+        lv_obj_set_style_text_font(ta, &lv_font_montserrat_16, 0);
+        lv_obj_set_size(ta, 206, 42);
+        lv_obj_set_pos(ta, 146, 92 + i * 48);
+        lv_obj_add_event_cb(ta, [](lv_event_t *e) {
+            lv_obj_t *t = (lv_obj_t *)lv_event_get_target(e);
+            lv_keyboard_set_textarea(wifi_kb, t);
+            show(wifi_kb, true);
+            lv_obj_move_foreground(wifi_kb);
+            lv_obj_set_y(wifi_form, 96 - lv_obj_get_y(t));     // the field just above the keyboard
+        }, LV_EVENT_FOCUSED, NULL);
+    }
+
+    btn(s, 360, 236, 112, 76, 16, LV_SYMBOL_SAVE, "Save", COL_GREEN1, COL_GREEN2, A_WifiSave);
+}
+
+// Full screen progress of a firmware update, drawn at once (the update blocks the main loop).
+void ui_ota_progress (unsigned pct)
+{
+    char buf[40];
+
+    if(ota_box == NULL) {
+        ota_box = box(lv_screen_active(), 0, 0, SCR_W, SCR_H);
+        lv_obj_set_style_bg_color(ota_box, C(COL_BG2), 0);
+        lv_obj_set_style_bg_opa(ota_box, 235, 0);
+        ota_lbl = label(ota_box, &lv_font_montserrat_24, COL_TEXT, "");
+        lv_obj_align(ota_lbl, LV_ALIGN_CENTER, 0, -30);
+        lv_obj_t *track = box(ota_box, 60, 170, 360, 14);
+        lv_obj_set_style_radius(track, 7, 0);
+        lv_obj_set_style_bg_color(track, C(COL_TRACK), 0);
+        lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
+        ota_bar = box(track, 0, 0, 0, 14);
+        lv_obj_set_style_radius(ota_bar, 7, 0);
+        gradient(ota_bar, COL_RING1, COL_RING2, LV_GRAD_DIR_HOR);
+    }
+
+    lv_obj_move_foreground(ota_box);
+    snprintf(buf, sizeof(buf), "Firmware update %u %%", pct);
+    set_text(ota_lbl, buf);
+    lv_obj_set_width(ota_bar, 360 * pct / 100);
+}
+
 static void build_sd (lv_obj_t *s)
 {
     sd_list = glass(s, 8, 44, 340, 268, 16);
@@ -1129,6 +1229,27 @@ static void action_run (int action, int arg)
                         screen == S_SetList ? S_SetGroups : S_Menu);
             break;
         case A_ScrSettings: screen_show(S_SetGroups); break;
+        case A_ScrWifi:     screen_show(S_Wifi); break;
+        case A_WifiToggle:
+            wifi_cfg.enabled = !wifi_cfg.enabled;
+            wifi_apply();
+            break;
+        case A_WifiScan:
+            wifi_scan_start();
+            wifi_scanning = true;
+            lv_dropdown_set_options(wifi_dd, "Searching...");
+            break;
+        case A_WifiSave:
+            if(!wifi_scanning && lv_dropdown_get_option_count(wifi_dd) && wifi_scan_result() > 0)
+                lv_dropdown_get_selected_str(wifi_dd, wifi_cfg.ssid, sizeof(wifi_cfg.ssid));
+            strlcpy(wifi_cfg.pass, lv_textarea_get_text(wifi_ta[1]), sizeof(wifi_cfg.pass));
+            strlcpy(wifi_cfg.ota, lv_textarea_get_text(wifi_ta[2]), sizeof(wifi_cfg.ota));
+            show(wifi_kb, false);
+            lv_obj_set_y(wifi_form, 0);
+            wifi_apply();
+            banner_show(*wifi_cfg.ota ? "WiFi settings saved" : "Saved - updates are off without OTA password",
+                         COL_GREEN2, 2500);
+            break;
         case A_Key:         edit_key((char)arg); break;
         case A_KeyDel:      edit_key('<'); break;
         case A_KeyClr:      edit_key('C'); break;
@@ -1305,6 +1426,8 @@ static void update_topbar (void)
     snprintf(buf, sizeof(buf), "G%u", 54 + mc.wcs);
     set_text(lbl_wcs, buf);
     set_text(lbl_link, mc.online ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(lbl_wifi, C(wifi_state() == Wifi_Connected ? COL_GREEN1 :
+                                             wifi_state() == Wifi_Connecting ? COL_ORANGE1 : 0x50506E), 0);
     lv_obj_set_style_text_color(lbl_link, C(mc.online ? COL_GREEN1 : COL_RED1), 0);
 }
 
@@ -1512,6 +1635,36 @@ static void update_screen (void)
             set_text(laser_msg, msg);
             break;
 
+        case S_Wifi:
+            if(wifi_scanning && wifi_scan_result() >= 0) {
+                int n = wifi_scan_result();
+                wifi_scanning = false;
+                if(n == 0)
+                    lv_dropdown_set_options(wifi_dd, *wifi_cfg.ssid ? wifi_cfg.ssid : "No network found");
+                else {
+                    lv_dropdown_clear_options(wifi_dd);
+                    int sel = 0;
+                    for(int i = 0; i < n; i++) {
+                        lv_dropdown_add_option(wifi_dd, wifi_scan_ssid(i), LV_DROPDOWN_POS_LAST);
+                        if(!strcmp(wifi_scan_ssid(i), wifi_cfg.ssid))
+                            sel = i;
+                    }
+                    lv_dropdown_set_selected(wifi_dd, sel);
+                }
+            }
+            switch(wifi_state()) {
+                case Wifi_Off:        set_text(wifi_status, *wifi_cfg.ssid ? "WiFi off" : "WiFi off - enter the network"); break;
+                case Wifi_Connecting: set_text(wifi_status, "Connecting..."); break;
+                case Wifi_Connected:
+                    snprintf(buf, sizeof(buf), "%s  " WIFI_HOST ".local", wifi_ip());
+                    set_text(wifi_status, buf);
+                    break;
+            }
+            set_text(b_wifi_toggle->text, wifi_cfg.enabled ? "On" : "Off");
+            btn_layout(b_wifi_toggle);
+            btn_colors(b_wifi_toggle, wifi_cfg.enabled ? COL_GREEN1 : 0, wifi_cfg.enabled ? COL_GREEN2 : 0);
+            break;
+
         case S_SetGroups:
             if(setlist.seq != setlist_seen && !setlist.loading) {
                 setlist_seen = setlist.seq;
@@ -1651,6 +1804,7 @@ void ui_init (void)
     build_laser(scr_obj[S_Laser]);
     build_sd(scr_obj[S_Sd]);
     build_settings(scr_obj[S_SetGroups], scr_obj[S_SetList], scr_obj[S_SetEdit]);
+    build_wifi(scr_obj[S_Wifi]);
     build_topbar(root);
     build_banner(root);
 

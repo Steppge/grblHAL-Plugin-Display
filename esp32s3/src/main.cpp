@@ -10,6 +10,7 @@
 #include "link.h"
 #include "ui.h"
 #include "beep.h"
+#include "wlan.h"
 
 #define CAL_MAGIC   0x54533335  // "TS35"
 #define UI_MS       100         // ui_update() interval
@@ -80,6 +81,17 @@ static void touch_read (lv_indev_t *indev, lv_indev_data_t *data)
         data->state = LV_INDEV_STATE_RELEASED;
 }
 
+// Called by the update, which blocks the main loop: draw the progress screen at once.
+static void ota_progress (unsigned pct)
+{
+    ui_ota_progress(pct);
+    lv_refr_now(NULL);
+    if(lcd.getStartCount()) {
+        lcd.waitDMA();
+        lcd.endWrite();
+    }
+}
+
 static uint32_t tick (void)
 {
     return millis();
@@ -123,6 +135,7 @@ void setup (void)
     beep_begin();
     link_begin();
     ui_init();
+    wifi_begin(ota_progress);
 }
 
 void loop (void)
@@ -131,6 +144,9 @@ void loop (void)
 
     link_poll();
     beep_poll();
+
+    // firmware updates only while the machine is idle, in alarm or not connected
+    wifi_poll(!mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP)));
 
     if(millis() - last_ui >= UI_MS) {
         last_ui = millis();

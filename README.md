@@ -34,7 +34,7 @@ The plugin only uses grblHAL core APIs and is not tied to a driver or MCU.
 - **Zoom**: the map full screen with two buttons, back and STOP. First tap on STOP: feed hold, the laser/spindle
   is switched off once the machine stands; the button then becomes ABORT (reset).
 - **Menu**: Move (jog X/Y/Z, steps 0.01-10 mm), Probe Z (plate thickness, feed), Laser (test pulse power and
-  time), SD card (file list, Load), Settings (groups, list, edit with keypad), Unlock.
+  time), SD card (file list, Load), Settings (groups, list, edit with keypad), WiFi.
 - Errors of commands and SD jobs appear in a banner. After an SD job has stopped with an error grblHAL refuses
   jogs until a reset, the main screen then offers Reset.
 - Beeper: click on button presses, three beeps on an alarm or error, two when a job of at least 10 s has finished.
@@ -58,6 +58,20 @@ The plugin only uses grblHAL core APIs and is not tied to a driver or MCU.
    N16R8 (16 MB flash, 8 MB octal PSRAM), the PSRAM is needed.
 
 For CMake based builds use the included `CMakeLists.txt` (library `display`).
+
+### Firmware updates over WiFi
+
+Once flashed over USB, the ESP32-S3 can be updated over WiFi:
+
+1. Menu - WiFi: the display scans for networks, pick yours, type the WiFi password and an OTA password,
+   Save, then switch WiFi On. The status line shows the IP address and `grblhal-display.local`.
+2. PlatformIO: environment `ota`, Upload. The OTA password is read from the environment variable
+   `GRBLHAL_DISPLAY_OTA` (Windows: `setx GRBLHAL_DISPLAY_OTA "..."`, then restart VS Code). The ESP32-S3
+   connects back to the PC for the data, allow Python in the firewall (Windows asks on the first upload).
+3. Or in a browser: `http://grblhal-display.local/update`, user `admin`, the OTA password, choose `firmware.bin`.
+
+Updates are only accepted while the machine is idle, in alarm or not connected, the display shows the progress.
+Without an OTA password no update is accepted. If an update fails the previous firmware keeps running.
 
 `DISPLAY_LINK_STREAM` is the instance number of a serial stream of your driver. On the BTT Octopus Pro with the
 main connection on USB: 0 = USART1 (TFT header), 1 = USART2 (PD5 TX2 / PD6 RX2 header next to the USB-C
