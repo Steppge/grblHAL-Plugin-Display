@@ -119,7 +119,7 @@ static uint32_t set_verify_at = 0;
 static int pending_screen = -1;         // screen change requested from a list row event
 
 // WiFi
-static lv_obj_t *lbl_wifi, *lbl_sender, *wifi_status, *wifi_dd, *wifi_ta[4], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
+static lv_obj_t *lbl_wifi, *wifi_status, *wifi_dd, *wifi_ta[4], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
 static lv_obj_t *wifi_form;             // everything but the keyboard, moved up while typing
 static bool wifi_scanning = false;
 static ui_btn_t *b_wifi_toggle;
@@ -628,9 +628,6 @@ static void build_topbar (lv_obj_t *s)
     lv_obj_set_pos(lbl_pwr, 268, 12);
     lbl_wcs = label(s, &lv_font_montserrat_16, COL_WCS, "G54");
     lv_obj_set_pos(lbl_wcs, 370, 12);
-    lbl_sender = label(s, &lv_font_montserrat_14, COL_RING1, "LB");
-    lv_obj_set_pos(lbl_sender, 392, 13);
-    show(lbl_sender, false);
     lbl_wifi = label(s, &lv_font_montserrat_16, 0x50506E, LV_SYMBOL_WIFI);
     lv_obj_set_pos(lbl_wifi, 420, 12);
     lbl_link = label(s, &lv_font_montserrat_16, COL_RED1, LV_SYMBOL_CLOSE);
@@ -1434,8 +1431,8 @@ static void update_topbar (void)
     snprintf(buf, sizeof(buf), "G%u", 54 + mc.wcs);
     set_text(lbl_wcs, buf);
     set_text(lbl_link, mc.online ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
-    show(lbl_sender, wifi_sender());
-    lv_obj_set_style_text_color(lbl_wifi, C(wifi_state() == Wifi_Connected ? COL_GREEN1 :
+    // WiFi symbol: grey off, orange connecting, green connected, cyan with a sender connected over WiFi
+    lv_obj_set_style_text_color(lbl_wifi, C(wifi_sender() ? COL_RING1 : wifi_state() == Wifi_Connected ? COL_GREEN1 :
                                              wifi_state() == Wifi_Connecting ? COL_ORANGE1 : 0x50506E), 0);
     lv_obj_set_style_text_color(lbl_link, C(mc.online ? COL_GREEN1 : COL_RED1), 0);
 }
@@ -1665,7 +1662,7 @@ static void update_screen (void)
                 case Wifi_Off:        set_text(wifi_status, *wifi_cfg.ssid ? "WiFi off" : "WiFi off - enter the network"); break;
                 case Wifi_Connecting: set_text(wifi_status, "Connecting..."); break;
                 case Wifi_Connected:
-                    snprintf(buf, sizeof(buf), "%s  %s.local", wifi_ip(), wifi_host());
+                    snprintf(buf, sizeof(buf), "%s  %s.local%s", wifi_ip(), wifi_host(), wifi_sender() ? "  - sender" : "");
                     set_text(wifi_status, buf);
                     break;
             }

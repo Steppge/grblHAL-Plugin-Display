@@ -63,12 +63,27 @@ For CMake based builds use the included `CMakeLists.txt` (library `display`).
 
 Once flashed over USB, the ESP32-S3 can be updated over WiFi:
 
-1. Menu - WiFi: the display scans for networks, pick yours, type the WiFi password and an OTA password,
-   Save, then switch WiFi On. The status line shows the IP address and `grblhal-display.local`.
+1. Menu - WiFi: the display scans for networks, pick yours, type the WiFi password, an OTA password and a machine
+   name, Save, then switch WiFi On. The status line shows the IP address and `<name>.local`
+   (default `grblhal-display.local`).
 2. PlatformIO: environment `ota`, Upload. The OTA password is read from the environment variable
    `GRBLHAL_DISPLAY_OTA` (Windows: `setx GRBLHAL_DISPLAY_OTA "..."`, then restart VS Code). The ESP32-S3
    connects back to the PC for the data, allow Python in the firewall (Windows asks on the first upload).
 3. Or in a browser: `http://grblhal-display.local/update`, user `admin`, the OTA password, choose `firmware.bin`.
+
+### LightBurn (or another sender) over WiFi
+
+The display passes a TCP connection on port 23 through to the second UART (921600 baud). While a sender is
+connected that UART is the active grblHAL stream, as with telnet on boards with networking; USB does not take
+commands then. In LightBurn: device type GRBL, connection Ethernet/TCP, address `<name>.local` (or the IP
+address), port 23. The WiFi symbol in the status bar turns cyan while a sender is connected.
+
+If the connection is lost while a job runs, the plugin holds the job and switches the laser/spindle off once
+the machine stands; resume or abort on the display. Raster jobs with many short lines may stutter over WiFi,
+large raster jobs are better run from the SD card.
+
+The machine name (WiFi screen, field Name) is the mDNS name (`<name>.local`) and the DHCP host name. Without
+`.local` it works when the router resolves the names of its clients.
 
 Updates are only accepted while the machine is idle, in alarm or not connected, the display shows the progress.
 Without an OTA password no update is accepted. If an update fails the previous firmware keeps running.
@@ -107,6 +122,13 @@ is the reset button of the TS35 (to GND), do not connect it to a supply.
 | RX | GPIO17 (TX) |
 | GND | GND |
 
+For a sender over WiFi (below) a second UART, on the Octopus the WIFI socket (USART3):
+
+| grblHAL board UART 2 | ESP32-S3 |
+|---|---|
+| TX (Octopus PD8, WIFI socket pin 15) | GPIO2 (RX) |
+| RX (Octopus PD9, WIFI socket pin 16) | GPIO1 (TX) |
+
 Supply: 5 V from the controller board (e.g. EXP1 5V/GND of the Octopus) to 5Vin of the ESP32-S3 and to EXP1 wire 1.
 
 ### Lessons from the bring-up
@@ -141,12 +163,13 @@ characters between the start character and `*`. The full description is in the h
 board -> display: $DS (status, 10/s), $DI (machine size), $DN (job name), $AK (command accepted),
                   $FL/$FE (file list), $PB/$PR/$PE (preview), $SV/$SE (settings), $ER (error), $MS (message)
 display -> board: >RT (realtime command), >GC (command line), >FL, >LF (laser pulse), >PV (preview),
-                  >SL/>SR (settings), >HB (heartbeat)
+                  >SL/>SR (settings), >HB (heartbeat), >TC (sender over WiFi connected)
 ```
 
 ## Status
 
-`$I` shows `[PLUGIN:Display link v0.1 (connected)]`, `(no display)` or `(no serial port)`.
+`$I` shows `[PLUGIN:Display link v0.1 (connected)]`, `(connected, WiFi sender active)`, `(no display)` or
+`(no serial port)`.
 
 ## License
 
