@@ -19,7 +19,7 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
   v0.1 - machine status to the display, realtime commands and command lines from it,
-         SD card file list, laser test pulse, G-code preview.
+         SD card file list, laser test pulse, G-code preview, settings, error reports.
 
   An ESP32-S3 with an MKS TS35 (see esp32s3/) is connected to a serial port of the controller
   board (DISPLAY_LINK_STREAM; BTT Octopus Pro: USART2 = PD5 TX2 / PD6 RX2 header next to USB-C, stream instance 1).
@@ -60,6 +60,15 @@
                                             and bitmap size, w a multiple of 8
     $PR,<row>,<hex>*<hh>    bitmap row (row 0 = top = y1), MSB first
     $PE,<rows>*<hh>         end, 0 = nothing burned/cut, -1 = not possible (busy, no file)
+    >SL*<hh>                all settings (as $$), answered one per line with
+    $SV|<id>|<group>|<editable>|<datatype>|<value>|<unit>|<min>|<max>|<name>|<format>*<hh>
+    $SE,<count>*<hh>        end of the settings list
+    >SR,<id>*<hh>           one setting again (after it was changed with a $<id>=<value> command line)
+    >HB*<hh>                heartbeat of the display, every 500 ms
+
+  Errors (status codes) of commands and SD jobs:
+
+    $ER,<code>,<sd job>*<hh>   sd job = 1: an SD job was running and has been ended by the error
 
   Enabled with DISPLAY_LINK_ENABLE in my_machine.h, started from my_plugin_init() in my_plugin.c.
   Optional in my_machine.h: DISPLAY_LINK_STREAM (serial stream instance, default 1), DISPLAY_LINK_BAUD (115200).
@@ -84,6 +93,7 @@
 #include "grbl/stepper.h"
 #include "grbl/spindle_control.h"
 #include "grbl/stream.h"
+#include "grbl/settings.h"
 
 #if SDCARD_ENABLE
 #include <strings.h>
@@ -560,6 +570,148 @@ static void pv_poll (sys_state_t state)
 #endif // SDCARD_ENABLE
 
 // ------------------------------------------------------------------------
+// Errors and settings
+// ------------------------------------------------------------------------
+
+static status_message_ptr prev_status_message;
+static uint32_t sd_job_seen = 0;    // ms, last time an SD job was running
+
+// Errors go to the display too, also those of SD jobs (the file stream reports them after it has
+// ended the job, a job that ran until shortly before counts).
+static status_code_t dl_status_message (status_code_t status)
+{
+    if(status != Status_OK && status != Status_Handled && dl_stream) {
+        char body[24];
+        snprintf(body, sizeof(body), "ER,%u,%d", (unsigned)status, hal.get_elapsed_ticks() - sd_job_seen < 500 ? 1 : 0);
+        send_line(body);
+    }
+
+    return prev_status_message ? prev_status_message(status) : status;
+}
+
+#define SET_MAX 220
+
+typedef struct {
+    const setting_detail_t *setting;
+    uint8_t offset;
+} set_entry_t;
+
+static set_entry_t set_all[SET_MAX];
+static uint16_t set_n = 0, set_sent = 0;
+static bool set_sending = false;
+
+static bool set_collect (const setting_detail_t *setting, uint_fast16_t offset, void *data)
+{
+    if(set_n < SET_MAX) {
+        set_all[set_n].setting = setting;
+        set_all[set_n].offset = (uint8_t)offset;
+        set_n++;
+    }
+
+    return true;
+}
+
+static int set_cmp (const void *a, const void *b)
+{
+    const set_entry_t *ea = (const set_entry_t *)a, *eb = (const set_entry_t *)b;
+
+    return (int)(ea->setting->id + ea->offset) - (int)(eb->setting->id + eb->offset);
+}
+
+// Same selection as $$, sorted by number.
+static void settings_collect (void)
+{
+    setting_details_t *details = settings_get_details();
+
+    set_n = 0;
+
+    do {
+        for(uint_fast16_t i = 0; i < details->n_settings; i++) {
+            const setting_detail_t *s = &details->settings[i];
+            bool hidden = (s->id == Setting_HomingFeedRate || s->id == Setting_HomingSeekRate)
+                           ? settings.homing.flags.per_axis_feedrates
+                           : s->flags.hidden;
+
+            if(hidden || s->value == NULL || s->flags.increment)
+                continue;
+
+            if(s->group == Group_Axis0)
+                settings_iterator(s, set_collect, NULL);    // one entry per axis
+            else if(s->is_available == NULL || s->is_available(s, 0))
+                set_collect(s, 0, NULL);
+        }
+    } while((details = details->next));
+
+    qsort(set_all, set_n, sizeof(set_entry_t), set_cmp);
+}
+
+// $SV|<id>|<group>|<editable>|<datatype>|<value>|<unit>|<min>|<max>|<name>|<format>
+static void send_setting (const set_entry_t *e)
+{
+    const setting_detail_t *s = e->setting;
+    char body[200], group[24], name[48];
+    const char *value = setting_get_value(s, e->offset);
+    bool editable = s->datatype != Format_String && s->datatype != Format_Password && s->datatype != Format_IPv4;
+    bool list = s->datatype == Format_Bitfield || s->datatype == Format_XBitfield || s->datatype == Format_RadioButtons;
+
+    if(s->group == Group_Axis0) {
+        snprintf(group, sizeof(group), "%s-axis", axis_letter[e->offset]);
+        snprintf(name, sizeof(name), "%s%s", axis_letter[e->offset], s->name);
+    } else {
+        const setting_group_detail_t *d = setting_get_group_details(settings_normalize_group(s->group));
+        snprintf(group, sizeof(group), "%s", d && d->name ? d->name : "Other");
+        snprintf(name, sizeof(name), "%s", s->name);
+    }
+
+    snprintf(body, sizeof(body), "SV|%u|%s|%d|%u|%.24s|%.10s|%.10s|%.10s|%.40s|%.50s", (unsigned)(s->id + e->offset), group,
+              editable ? 1 : 0, (unsigned)s->datatype, value ? value : "", s->unit ? s->unit : "",
+              s->min_value ? s->min_value : "", s->max_value ? s->max_value : "", name,
+              list && s->format ? s->format : "");
+
+    // the checksum separator and line ends may not appear in the text
+    for(char *p = body; *p; p++) {
+        if(*p == '*' || *p == '\n' || *p == '\r')
+            *p = ' ';
+    }
+
+    send_line(body);
+}
+
+static void settings_start (void)
+{
+    settings_collect();
+    set_sent = 0;
+    set_sending = true;
+}
+
+// One setting again after a change (>SR,<id>)
+static void setting_resend (unsigned id)
+{
+    for(uint_fast16_t i = 0; i < set_n; i++) {
+        if((unsigned)(set_all[i].setting->id + set_all[i].offset) == id) {
+            send_setting(&set_all[i]);
+            return;
+        }
+    }
+}
+
+static void settings_poll (void)
+{
+    if(!set_sending)
+        return;
+
+    for(uint_fast8_t n = 0; n < 2 && set_sent < set_n; n++)
+        send_setting(&set_all[set_sent++]);
+
+    if(set_sent == set_n) {
+        char body[16];
+        snprintf(body, sizeof(body), "SE,%u", set_n);
+        send_line(body);
+        set_sending = false;
+    }
+}
+
+// ------------------------------------------------------------------------
 // Receiving
 // ------------------------------------------------------------------------
 
@@ -600,6 +752,12 @@ static void handle_line (char *line)
 
     else if(!strncmp(line, "PV,", 3))
         pv_start(line + 3);
+
+    else if(!strcmp(line, "SL"))
+        settings_start();
+
+    else if(!strncmp(line, "SR,", 3))
+        setting_resend(strtoul(line + 3, NULL, 10));
 }
 
 static void receive (void)
@@ -671,6 +829,7 @@ static void send_status (sys_state_t state)
     if((job = stream_get_job_info()) && job->size) {
         pct = (int)((uint64_t)job->pos * 1000 / job->size);
         flags |= DL_FLAG_SD_JOB;
+        sd_job_seen = hal.get_elapsed_ticks();
     }
 #endif
 
@@ -714,6 +873,7 @@ static void dl_realtime (sys_state_t state)
     receive();
     pulse_poll(state);
     pv_poll(state);
+    settings_poll();
 
     if(now - last_status >= DL_PERIOD_MS) {
         last_status = now;
@@ -747,6 +907,9 @@ void display_link_init (void)
 
     on_execute_realtime = grbl.on_execute_realtime;
     grbl.on_execute_realtime = dl_realtime;
+
+    prev_status_message = grbl.report.status_message;
+    grbl.report.status_message = dl_status_message;
 }
 
 #endif // DISPLAY_LINK_ENABLE

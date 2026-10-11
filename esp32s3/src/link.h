@@ -76,6 +76,11 @@ struct machine_t {
     bool info;              // $DI has arrived
     char msg[64];           // last message from the controller
     uint16_t msg_seq;       // counts messages
+    uint16_t err_code;      // last error (status code) from the controller
+    bool err_job;           // it has ended an SD job
+    uint16_t err_seq;       // counts errors
+    char refused[48];       // command line the controller did not accept
+    uint16_t refused_seq;   // counts refused command lines
 };
 
 struct file_list_t {
@@ -99,9 +104,37 @@ struct preview_t {
     uint8_t bits[PREVIEW_W_MAX / 8 * PREVIEW_H_MAX];
 };
 
+// grblHAL settings, see display_link.c (SV/SE)
+#define SETTINGS_MAX        220
+
+enum { Fmt_Bool = 0, Fmt_Bitfield, Fmt_XBitfield, Fmt_RadioButtons, Fmt_AxisMask, Fmt_Integer, Fmt_Decimal };
+
+struct setting_t {
+    uint16_t id;
+    bool editable;
+    uint8_t type;           // grblHAL setting_datatype_t
+    char group[24];
+    char value[26];
+    char unit[12];
+    char min[12], max[12];
+    char name[42];
+    char format[52];        // bit or option names, comma separated
+};
+
+struct settings_list_t {
+    setting_t *item;        // SETTINGS_MAX entries in PSRAM
+    int count;
+    bool loading;
+    uint16_t seq;           // counts completed lists and single updates
+};
+
 extern machine_t mc;
 extern file_list_t files;
 extern preview_t preview;
+extern settings_list_t setlist;
+
+void link_settings (void);              // request all settings
+void link_setting (uint16_t id);        // request one setting again
 
 void link_preview (const char *name);   // request the preview of an SD file, "" clears it
 

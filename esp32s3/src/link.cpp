@@ -8,11 +8,13 @@
 #define CMD_ACK_MS          400     // no answer: send again
 #define CMD_TRIES            30     // then give up
 #define CMD_QUEUE             8
+#define HEARTBEAT_MS        500     // the controller sees the display as connected
 
 machine_t mc = {};
 link_stats_t link_stats = {};
 file_list_t files = {};
 preview_t preview = {};
+settings_list_t setlist = {};
 
 static HardwareSerial &port = Serial1;
 
@@ -84,6 +86,8 @@ static void queue_poll (uint32_t now)
 
     if(++q_tries > CMD_TRIES) {
         Serial.printf("link: gave up on '%s'\n", queue[q_head].line);
+        strlcpy(mc.refused, queue[q_head].line, sizeof(mc.refused));
+        mc.refused_seq++;
         queue_pop();
         return;
     }
@@ -135,6 +139,66 @@ static void handle_status (const char *args)
     mc.wcs = wcs;
     mc.updated = millis();
     mc.online = true;
+}
+
+// <id>|<group>|<editable>|<datatype>|<value>|<unit>|<min>|<max>|<name>|<format>
+static void parse_setting (char *args)
+{
+    char *f[10];
+    int n = 0;
+
+    if(setlist.item == NULL)
+        return;
+
+    f[n++] = args;
+    for(char *p = args; *p && n < 10; p++) {
+        if(*p == '|') {
+            *p = '\0';
+            f[n++] = p + 1;
+        }
+    }
+    if(n < 10)
+        return;
+
+    uint16_t id = (uint16_t)atoi(f[0]);
+    int i = 0;
+    while(i < setlist.count && setlist.item[i].id != id)
+        i++;
+    if(i == setlist.count) {
+        if(setlist.count == SETTINGS_MAX)
+            return;
+        setlist.count++;
+    }
+
+    setting_t *s = &setlist.item[i];
+    s->id = id;
+    strlcpy(s->group, f[1], sizeof(s->group));
+    s->editable = f[2][0] == '1';
+    s->type = (uint8_t)atoi(f[3]);
+    strlcpy(s->value, f[4], sizeof(s->value));
+    strlcpy(s->unit, f[5], sizeof(s->unit));
+    strlcpy(s->min, f[6], sizeof(s->min));
+    strlcpy(s->max, f[7], sizeof(s->max));
+    strlcpy(s->name, f[8], sizeof(s->name));
+    strlcpy(s->format, f[9], sizeof(s->format));
+
+    if(!setlist.loading)
+        setlist.seq++;      // a single update after a change
+}
+
+void link_settings (void)
+{
+    setlist.count = 0;
+    setlist.loading = true;
+    link_send("SL");
+}
+
+void link_setting (uint16_t id)
+{
+    char body[16];
+
+    snprintf(body, sizeof(body), "SR,%u", id);
+    link_send(body);
 }
 
 static void handle_line (char *line)
@@ -214,6 +278,19 @@ static void handle_line (char *line)
             preview.loading = false;
             preview.seq++;
         }
+    } else if(!strncmp(line, "ER,", 3)) {
+        unsigned code;
+        int job;
+        if(sscanf(line + 3, "%u,%d", &code, &job) == 2) {
+            mc.err_code = code;
+            mc.err_job = job == 1;
+            mc.err_seq++;
+        }
+    } else if(!strncmp(line, "SV|", 3))
+        parse_setting(line + 3);
+    else if(!strncmp(line, "SE,", 3)) {
+        setlist.loading = false;
+        setlist.seq++;
     } else if(!strncmp(line, "MS,", 3)) {
         strlcpy(mc.msg, line + 3, sizeof(mc.msg));
         mc.msg_seq++;
@@ -236,6 +313,7 @@ void link_preview (const char *name)
 
 void link_begin (void)
 {
+    setlist.item = (setting_t *)ps_calloc(SETTINGS_MAX, sizeof(setting_t));
     port.setRxBufferSize(8192);     // preview rows arrive in bursts while LVGL is drawing
     port.begin(LINK_BAUD, SERIAL_8N1, PIN_LINK_RX, PIN_LINK_TX);
 }
@@ -265,6 +343,12 @@ void link_poll (void)
 
     if(mc.online && now - mc.updated > LINK_TIMEOUT_MS)
         mc.online = false;
+
+    static uint32_t last_hb = 0;
+    if(now - last_hb >= HEARTBEAT_MS) {
+        last_hb = now;
+        link_send("HB");
+    }
 
     queue_poll(now);
 }

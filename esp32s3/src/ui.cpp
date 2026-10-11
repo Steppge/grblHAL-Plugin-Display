@@ -37,10 +37,11 @@ enum action_t {
     A_Step0, A_Step1, A_Step2, A_Step3, A_Step4,
     A_PlateDn, A_PlateUp, A_PFeedDn, A_PFeedUp, A_Probe,
     A_LPwrDn, A_LPwrUp, A_LTimeDn, A_LTimeUp, A_Fire,
-    A_SdRefresh, A_SdRun, A_SdPick
+    A_SdRefresh, A_SdRun, A_SdPick,
+    A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset
 };
 
-enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_Count };
+enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Count };
 
 struct ui_btn_t {
     lv_obj_t *obj, *icon, *text, *bar;
@@ -96,6 +97,24 @@ static lv_obj_t *move_pos, *move_step_lbl;
 static ui_btn_t *b_step[N_VAL(step_val)];
 static lv_obj_t *probe_plate, *probe_feed, *probe_msg, *laser_pwr, *laser_time, *laser_msg;
 static lv_obj_t *sd_list, *sd_msg;
+
+// message banner below the top bar, errors and refused commands
+static lv_obj_t *banner, *banner_lbl;
+static uint32_t banner_until = 0;       // 0 = until tapped
+static bool job_error = false;          // an SD job ended with an error, grblHAL needs a reset
+static uint16_t err_seen = 0, refused_seen = 0;
+
+// settings
+static lv_obj_t *grp_list, *grp_msg, *set_list, *set_title;
+static lv_obj_t *ed_title, *ed_name, *ed_now, *ed_hint, *ed_entry;
+static ui_btn_t *b_save, *b_dot, *b_minus;
+static char set_group[24] = "";
+static int set_cur = -1;                // index into setlist.item
+static char edit_buf[24] = "";
+static uint16_t setlist_seen = 0;
+static bool set_verify = false;         // a changed value is waiting for its confirmation
+static uint32_t set_verify_at = 0;
+static int pending_screen = -1;         // screen change requested from a list row event
 static ui_btn_t *b_sd_run;
 static char sd_sel[64] = "";
 static uint16_t files_seq = 0, msg_seq = 0;
@@ -388,6 +407,60 @@ static void background (void)
 }
 
 // ------------------------------------------------------------------------
+// Message banner
+// ------------------------------------------------------------------------
+
+static void banner_show (const char *text, uint32_t color, uint32_t ms)
+{
+    lv_label_set_text(banner_lbl, text);
+    lv_obj_set_style_bg_color(banner, C(color), 0);
+    show(banner, true);
+    banner_until = ms ? millis() + ms : 0;
+}
+
+static void banner_hide (void)
+{
+    show(banner, false);
+}
+
+static const char *error_text (uint16_t code)
+{
+    switch(code) {
+        case 1:  return "Expected command letter";
+        case 2:  return "Bad number format";
+        case 3:  return "Invalid $ statement";
+        case 9:  return "Locked (alarm or job)";
+        case 10: return "Soft limit";
+        case 15: return "Jog beyond travel";
+        case 16: return "Invalid jog command";
+        case 20: return "Unsupported G-code";
+        case 22: return "Feed rate missing";
+        case 33: return "Invalid target";
+        case 45: return "Limit switch engaged";
+        case 46: return "Homing required";
+        case 52: return "Setting value out of range";
+        case 60: case 64: case 65: return "SD card not mounted";
+        case 61: return "File read error";
+        case 71: case 72: case 73: case 74: case 75: case 76: return "Expression error";
+        default: return "";
+    }
+}
+
+static void build_banner (lv_obj_t *root)
+{
+    banner = box(root, 8, 42, 464, 40);
+    lv_obj_set_style_radius(banner, 12, 0);
+    lv_obj_set_style_bg_opa(banner, 235, 0);
+    lv_obj_add_flag(banner, LV_OBJ_FLAG_CLICKABLE);
+    banner_lbl = label(banner, &lv_font_montserrat_14, COL_TEXT, "");
+    lv_label_set_long_mode(banner_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(banner_lbl, 440);
+    lv_obj_center(banner_lbl);
+    lv_obj_add_event_cb(banner, [](lv_event_t *e) { banner_hide(); }, LV_EVENT_CLICKED, NULL);
+    show(banner, false);
+}
+
+// ------------------------------------------------------------------------
 // Screens
 // ------------------------------------------------------------------------
 
@@ -409,6 +482,16 @@ static void screen_show (screen_t s)
         btn_set(b_menu, LV_SYMBOL_LIST, NULL, 0, 0, A_Menu);
     else
         btn_set(b_menu, LV_SYMBOL_LEFT, NULL, 0, 0, A_Back);
+
+    if(s == S_SetGroups && !setlist.loading) {
+        link_settings();
+        set_text(grp_msg, "Loading...");
+        setlist_seen = setlist.seq;
+    }
+    if(s == S_SetGroups || s == S_SetList)
+        setlist_seen = setlist.seq - 1;     // rebuild the list
+    if(s == S_SetEdit && set_cur >= 0)
+        strlcpy(edit_buf, setlist.item[set_cur].value, sizeof(edit_buf));
 
     if(s == S_Sd) {
         files.count = 0;
@@ -628,7 +711,7 @@ static void build_menu (lv_obj_t *s)
         { LV_SYMBOL_DOWNLOAD, "Probe Z", COL_FEED1, COL_FEED2, A_ScrProbe, A_None },
         { LV_SYMBOL_CHARGE,   "Laser",   COL_PWR1,  COL_PWR2,  A_ScrLaser, A_None },
         { LV_SYMBOL_SD_CARD,  "SD card", COL_PWR1,  COL_PWR2,  A_ScrSd,    A_None },
-        { LV_SYMBOL_HOME,     "Home",    COL_GREEN1, COL_GREEN2, A_None,   A_Home },
+        { LV_SYMBOL_SETTINGS, "Settings", COL_GREEN1, COL_GREEN2, A_ScrSettings, A_None },
         { LV_SYMBOL_REFRESH,  "Unlock",  0, 0,                 A_Unlock,   A_None },
     };
 
@@ -697,6 +780,198 @@ static void build_laser (lv_obj_t *s)
     laser_time = value_row(s, 110, "Pulse (ms)", A_LTimeDn, A_LTimeUp);
     btn(s, 8, 216, 200, 96, 16, LV_SYMBOL_CHARGE, "Fire (hold)", COL_RED1, COL_RED2, A_None, A_Fire);
     laser_msg = msg_label(s, 224, 214, 248);
+}
+
+static lv_obj_t *scroll_list (lv_obj_t *s, int x, int y, int w, int h)
+{
+    lv_obj_t *l = glass(s, x, y, w, h, 16);
+
+    lv_obj_add_flag(l, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(l, LV_DIR_VER);
+    lv_obj_set_flex_flow(l, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(l, 6, 0);
+    lv_obj_set_style_pad_row(l, 6, 0);
+
+    return l;
+}
+
+static lv_obj_t *list_row (lv_obj_t *list, const char *left, const char *right, bool sel)
+{
+    lv_obj_t *r = lv_button_create(list);
+
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, LV_PCT(100), 40);
+    lv_obj_set_style_radius(r, 10, 0);
+    lv_obj_set_style_bg_color(r, C(sel ? COL_FEED2 : COL_CARD), 0);
+    lv_obj_set_style_bg_opa(r, sel ? LV_OPA_COVER : 120, 0);
+    lv_obj_set_style_bg_opa(r, 220, LV_STATE_PRESSED);
+
+    lv_obj_t *l = label(r, &lv_font_montserrat_16, COL_TEXT, left);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(l, right ? 300 : 420);
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
+
+    if(right) {
+        lv_obj_t *v = label(r, &lv_font_montserrat_16, COL_PWR, right);
+        lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_width(v, 120);
+        lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
+    }
+
+    return r;
+}
+
+static void build_settings (lv_obj_t *groups, lv_obj_t *list, lv_obj_t *edit)
+{
+    grp_list = scroll_list(groups, 8, 44, 464, 268);
+    grp_msg = label(groups, &lv_font_montserrat_16, COL_MUTED, "");
+    lv_obj_align(grp_msg, LV_ALIGN_TOP_RIGHT, -16, 14);
+
+    set_list = scroll_list(list, 8, 44, 464, 268);
+    set_title = label(list, &lv_font_montserrat_16, COL_MUTED, "");
+    lv_obj_align(set_title, LV_ALIGN_TOP_RIGHT, -16, 14);
+
+    // edit: description on the left, keypad on the right
+    ed_title = label(edit, &lv_font_montserrat_24, COL_TEXT, "");
+    lv_obj_set_pos(ed_title, 12, 44);
+    ed_name = msg_label(edit, 12, 74, 224);
+    lv_obj_set_style_text_font(ed_name, &lv_font_montserrat_14, 0);
+    ed_now = label(edit, &lv_font_montserrat_14, COL_PWR, "");
+    lv_label_set_long_mode(ed_now, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(ed_now, 160);
+    lv_obj_set_pos(ed_now, 12, 116);
+    btn(edit, 176, 108, 60, 30, 10, NULL, "Now", 0, 0, A_KeyNow);
+    ed_hint = msg_label(edit, 12, 144, 224);
+    lv_obj_set_style_text_font(ed_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(ed_hint, C(COL_MUTED), 0);
+    lv_obj_set_height(ed_hint, 44);
+
+    lv_obj_t *entry = glass(edit, 8, 192, 228, 44, 12);
+    ed_entry = label(entry, &lv_font_montserrat_24, COL_TEXT, "");
+    lv_obj_set_style_text_align(ed_entry, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_width(ed_entry, 210);
+    lv_obj_align(ed_entry, LV_ALIGN_RIGHT_MID, -8, 0);
+
+    btn(edit, 8, 244, 72, 68, 14, LV_SYMBOL_BACKSPACE, NULL, 0, 0, A_KeyDel);
+    btn(edit, 86, 244, 72, 68, 14, NULL, "C", 0, 0, A_KeyClr);
+    b_save = btn(edit, 164, 244, 72, 68, 14, LV_SYMBOL_SAVE, "Save", COL_GREEN1, COL_GREEN2, A_Save);
+
+    static const char keys[] = "789456123-0.";
+    for(int i = 0; i < 12; i++) {
+        char t[2] = { keys[i], 0 };
+        ui_btn_t *k = btn(edit, 244 + (i % 3) * 78, 44 + (i / 3) * 68, 72, 62, 14, NULL, t, 0, 0, A_Key);
+        lv_obj_set_style_text_font(k->text, &lv_font_montserrat_24, 0);
+        k->arg = keys[i];
+        if(keys[i] == '.')
+            b_dot = k;
+        if(keys[i] == '-')
+            b_minus = k;
+    }
+}
+
+static void groups_fill (void)
+{
+    lv_obj_clean(grp_list);
+
+    for(int i = 0; i < setlist.count; i++) {
+        int j = 0;
+        while(j < i && strcmp(setlist.item[j].group, setlist.item[i].group))
+            j++;
+        if(j < i)
+            continue;   // group already listed
+
+        lv_obj_t *r = list_row(grp_list, setlist.item[i].group, NULL, false);
+        lv_obj_add_event_cb(r, [](lv_event_t *e) {
+            strlcpy(set_group, setlist.item[(int)(intptr_t)lv_event_get_user_data(e)].group, sizeof(set_group));
+            pending_screen = S_SetList;
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+
+    set_text(grp_msg, setlist.loading ? "Loading..." : "");
+}
+
+static void settings_fill (void)
+{
+    char left[64];
+
+    lv_obj_clean(set_list);
+    set_text(set_title, set_group);
+
+    for(int i = 0; i < setlist.count; i++) {
+        const setting_t *st = &setlist.item[i];
+        if(strcmp(st->group, set_group))
+            continue;
+        snprintf(left, sizeof(left), "$%u  %s", st->id, st->name);
+        lv_obj_t *r = list_row(set_list, left, st->value, false);
+        lv_obj_add_event_cb(r, [](lv_event_t *e) {
+            set_cur = (int)(intptr_t)lv_event_get_user_data(e);
+            pending_screen = S_SetEdit;
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+}
+
+static void edit_key (char c)
+{
+    size_t n = strlen(edit_buf);
+
+    if(c == '<') {
+        if(n)
+            edit_buf[n - 1] = '\0';
+    } else if(c == 'C')
+        *edit_buf = '\0';
+    else if(c == '-') {
+        if(n == 0)
+            strcpy(edit_buf, "-");
+    } else if(c == '.') {
+        if(!strchr(edit_buf, '.') && n < sizeof(edit_buf) - 1)
+            strcat(edit_buf, n == 0 ? "0." : ".");
+    } else if(n < sizeof(edit_buf) - 1) {
+        edit_buf[n] = c;
+        edit_buf[n + 1] = '\0';
+    }
+}
+
+static void update_edit (void)
+{
+    char buf[96];
+    const setting_t *st = set_cur >= 0 ? &setlist.item[set_cur] : NULL;
+    bool may_save = mc.online && (mc.state == STATE_IDLE || (mc.state & STATE_ALARM));
+
+    if(st == NULL)
+        return;
+
+    snprintf(buf, sizeof(buf), "$%u", st->id);
+    set_text(ed_title, buf);
+    set_text(ed_name, st->name);
+    snprintf(buf, sizeof(buf), "Now: %s %s", st->value, st->unit);
+    set_text(ed_now, buf);
+
+    switch(st->type) {
+        case Fmt_Bool:         strcpy(buf, "0 = off, 1 = on"); break;
+        case Fmt_Bitfield:
+        case Fmt_XBitfield:    snprintf(buf, sizeof(buf), "Bits 1, 2, 4..: %s", st->format); break;
+        case Fmt_RadioButtons: snprintf(buf, sizeof(buf), "0, 1, 2..: %s", st->format); break;
+        case Fmt_AxisMask:     strcpy(buf, "Bits: 1 = X, 2 = Y, 4 = Z"); break;
+        default:
+            if(*st->min || *st->max)
+                snprintf(buf, sizeof(buf), "Range: %s .. %s", st->min, st->max);
+            else
+                *buf = '\0';
+            break;
+    }
+    set_text(ed_hint, buf);
+    set_text(ed_entry, edit_buf);
+
+    btn_enable(b_save, may_save && st->editable && *edit_buf);
+    btn_enable(b_dot, st->type == Fmt_Decimal);
+    btn_enable(b_minus, st->type == Fmt_Decimal || st->type == Fmt_Integer);
+
+    // after saving: ask for the value again and report whether it was taken
+    if(set_verify_at && millis() >= set_verify_at) {
+        set_verify_at = 0;
+        link_setting(st->id);
+    }
 }
 
 static void build_sd (lv_obj_t *s)
@@ -849,7 +1124,31 @@ static void action_run (int action, int arg)
 
     switch(action) {
         case A_Menu:        screen_show(S_Menu); break;
-        case A_Back:        screen_show(screen == S_Menu ? S_Main : S_Menu); break;
+        case A_Back:
+            screen_show(screen == S_Menu ? S_Main : screen == S_SetEdit ? S_SetList :
+                        screen == S_SetList ? S_SetGroups : S_Menu);
+            break;
+        case A_ScrSettings: screen_show(S_SetGroups); break;
+        case A_Key:         edit_key((char)arg); break;
+        case A_KeyDel:      edit_key('<'); break;
+        case A_KeyClr:      edit_key('C'); break;
+        case A_KeyNow:
+            if(set_cur >= 0)
+                strlcpy(edit_buf, setlist.item[set_cur].value, sizeof(edit_buf));
+            break;
+        case A_Save:
+            if(set_cur >= 0 && *edit_buf) {
+                snprintf(cmd, sizeof(cmd), "$%u=%s", setlist.item[set_cur].id, edit_buf);
+                link_cmd(cmd);
+                set_verify = true;
+                set_verify_at = millis() + 400;
+            }
+            break;
+        case A_JobReset:
+            link_rt(CMD_RESET);
+            job_error = false;
+            banner_hide();
+            break;
         case A_Home:        link_cmd("$H"); screen_show(S_Main); break;
         case A_Unlock:      link_cmd("$X"); break;
         case A_Reset:       link_rt(CMD_RESET); break;
@@ -1027,8 +1326,12 @@ static void update_main_buttons (void)
         btn_set(row[0], LV_SYMBOL_HOME, "Home", COL_FEED1, COL_FEED2, A_None, A_Home);
         btn_enable(row[0], idle || alarm);
 
-        // RESET while a critical alarm waits for a reset, HOLD 3S while homing is required, UNLOCK otherwise
-        if(mc.flags & DL_FLAG_BLOCKING) {
+        // RESET while a critical alarm waits for a reset, HOLD 3S while homing is required, UNLOCK otherwise.
+        // After an SD job error grblHAL refuses jogs until a reset, RESET is offered then too.
+        if(job_error && !alarm) {
+            btn_set(row[1], LV_SYMBOL_WARNING, "Reset", COL_ORANGE1, COL_ORANGE2, A_JobReset);
+            btn_enable(row[1], mc.online);
+        } else if(mc.flags & DL_FLAG_BLOCKING) {
             btn_set(row[1], LV_SYMBOL_WARNING, "Reset", COL_RED1, COL_RED2, A_Reset);
             btn_enable(row[1], true);
         } else if(alarm && (mc.flags & DL_FLAG_HOMING_LOCK)) {
@@ -1209,6 +1512,33 @@ static void update_screen (void)
             set_text(laser_msg, msg);
             break;
 
+        case S_SetGroups:
+            if(setlist.seq != setlist_seen && !setlist.loading) {
+                setlist_seen = setlist.seq;
+                groups_fill();
+            }
+            break;
+
+        case S_SetList:
+            if(setlist.seq != setlist_seen && !setlist.loading) {
+                setlist_seen = setlist.seq;
+                settings_fill();
+            }
+            break;
+
+        case S_SetEdit:
+            if(set_verify && setlist.seq != setlist_seen && set_cur >= 0) {
+                const setting_t *st = &setlist.item[set_cur];
+                set_verify = false;
+                if(fabsf(strtof(st->value, NULL) - strtof(edit_buf, NULL)) < 0.0005f)
+                    banner_show("Saved", COL_GREEN2, 2000);
+                else
+                    banner_show("Not accepted", COL_RED2, 3000);
+            }
+            setlist_seen = setlist.seq;
+            update_edit();
+            break;
+
         case S_Sd:
             if((files.done && files.seq != files_seq) || sd_dirty) {
                 files_seq = files.seq;
@@ -1254,6 +1584,41 @@ void ui_update (void)
         screen_show(S_Main);
     last_state = mc.state;
 
+    // errors from the controller and command lines it did not accept
+    if(mc.err_seq != err_seen) {
+        char buf[96];
+        err_seen = mc.err_seq;
+        if(mc.err_job) {
+            job_error = true;
+            snprintf(buf, sizeof(buf), "Job stopped: error %u %s - press Reset", mc.err_code, error_text(mc.err_code));
+            banner_show(buf, COL_RED2, 0);
+        } else {
+            snprintf(buf, sizeof(buf), "Error %u %s", mc.err_code, error_text(mc.err_code));
+            banner_show(buf, COL_RED2, 4000);
+        }
+        beep(3);
+    }
+    if(mc.refused_seq != refused_seen) {
+        char buf[96];
+        refused_seen = mc.refused_seq;
+        snprintf(buf, sizeof(buf), "Not accepted: %s", mc.refused);
+        banner_show(buf, COL_ORANGE2, 4000);
+        beep(3);
+    }
+    if(banner_until && millis() >= banner_until) {
+        banner_until = 0;
+        banner_hide();
+    }
+    if(job && job_error) {      // a new job runs, the reset has happened
+        job_error = false;
+        banner_hide();
+    }
+
+    if(pending_screen >= 0) {
+        screen_show((screen_t)pending_screen);
+        pending_screen = -1;
+    }
+
     map_record();
     probe_poll();
     update_topbar();
@@ -1290,7 +1655,9 @@ void ui_init (void)
     build_probe(scr_obj[S_Probe]);
     build_laser(scr_obj[S_Laser]);
     build_sd(scr_obj[S_Sd]);
+    build_settings(scr_obj[S_SetGroups], scr_obj[S_SetList], scr_obj[S_SetEdit]);
     build_topbar(root);
+    build_banner(root);
 
     map_init();
     layout_main();

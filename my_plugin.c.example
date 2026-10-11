@@ -1,0 +1,21 @@
+/*
+  my_plugin.c - example for starting the display link plugin
+
+  Copy to the driver's Src/ folder as my_plugin.c and build with -D ADD_MY_PLUGIN=1.
+  grblHAL calls my_plugin_init() once at startup. Enable the plugin in my_machine.h:
+
+    #define DISPLAY_LINK_ENABLE     1   // ESP32-S3 touch display, see display_link.c
+
+  If you already have a my_plugin.c, add the call below to your my_plugin_init().
+*/
+
+#include "driver.h"
+
+extern void display_link_init (void);
+
+void my_plugin_init (void)
+{
+#if DISPLAY_LINK_ENABLE
+    display_link_init();
+#endif
+}
