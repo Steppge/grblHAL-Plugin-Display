@@ -1,0 +1,11 @@
+{
+  "name": "display",
+  "description": "grblHAL plugin: serial link to an ESP32-S3 touch display (MKS TS35)",
+  "license": "GPL-3.0-or-later",
+  "build": {
+    "srcFilter": [
+      "+<*.c>",
+      "-<esp32s3/>"
+    ]
+  }
+}
