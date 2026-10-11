@@ -19,7 +19,8 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
   v0.1 - machine status to the display, realtime commands and command lines from it,
-         SD card file list, laser test pulse, G-code preview, settings, error reports.
+         SD card file list, laser test pulse, G-code preview, settings, error reports,
+         sender (LightBurn) over WiFi on a second UART.
 
   An ESP32-S3 with an MKS TS35 (see esp32s3/) is connected to a serial port of the controller
   board (DISPLAY_LINK_STREAM; BTT Octopus Pro: USART2 = PD5 TX2 / PD6 RX2 header next to USB-C, stream instance 1).
@@ -65,13 +66,17 @@
     $SE,<count>*<hh>        end of the settings list
     >SR,<id>*<hh>           one setting again (after it was changed with a $<id>=<value> command line)
     >HB*<hh>                heartbeat of the display, every 500 ms
+    >TC,<1|0>*<hh>          a sender (LightBurn) has connected to / disconnected from the display over WiFi:
+                            the second UART (DISPLAY_LINK_SENDER_STREAM) becomes / stops being the active
+                            stream. A job running when the connection is lost is held, the laser switched off.
 
   Errors (status codes) of commands and SD jobs:
 
     $ER,<code>,<sd job>*<hh>   sd job = 1: an SD job was running and has been ended by the error
 
   Enabled with DISPLAY_LINK_ENABLE in my_machine.h, started from my_plugin_init() in my_plugin.c.
-  Optional in my_machine.h: DISPLAY_LINK_STREAM (serial stream instance, default 1), DISPLAY_LINK_BAUD (115200).
+  Optional in my_machine.h: DISPLAY_LINK_STREAM (serial stream instance, default 1), DISPLAY_LINK_BAUD (115200),
+  DISPLAY_LINK_SENDER_STREAM (UART for a sender over WiFi, default 2, 255 = none), DISPLAY_LINK_SENDER_BAUD (921600).
   Only grblHAL core APIs are used, so the plugin is not tied to the STM32F4 driver.
 */
 
@@ -109,6 +114,12 @@
 #endif
 #ifndef DISPLAY_LINK_BAUD
 #define DISPLAY_LINK_BAUD  115200
+#endif
+#ifndef DISPLAY_LINK_SENDER_STREAM
+#define DISPLAY_LINK_SENDER_STREAM  2   // second UART for a sender (LightBurn) over WiFi, 255 = none
+#endif
+#ifndef DISPLAY_LINK_SENDER_BAUD
+#define DISPLAY_LINK_SENDER_BAUD 921600
 #endif
 #define DL_PERIOD_MS          100   // status line interval
 #define DL_INFO_MS           1000   // machine size and job name interval
@@ -712,6 +723,56 @@ static void settings_poll (void)
 }
 
 // ------------------------------------------------------------------------
+// Sender over WiFi: the display passes a TCP connection (port 23) through to a second UART.
+// While a sender is connected that UART is the active grblHAL stream, like telnet.
+// ------------------------------------------------------------------------
+
+static const io_stream_t *sender = NULL;
+static bool sender_active = false, sender_stop = false;
+
+// While the UART is not the active stream its input is dropped, realtime commands included.
+static bool sender_drop (uint8_t c)
+{
+    return true;
+}
+
+static void sender_connect (bool on)
+{
+    if(sender == NULL || on == sender_active)
+        return;
+
+    if(on) {
+        sender->reset_read_buffer();
+        sender_active = stream_connect(sender);
+    } else {
+        // the connection is gone while a job runs: hold, the laser/spindle is switched off once the
+        // machine stands (see sender_poll), the job can be resumed or aborted on the display
+        if(state_get() & (STATE_CYCLE | STATE_JOG)) {
+            grbl.enqueue_realtime_command(CMD_FEED_HOLD);
+            sender_stop = true;
+        }
+        stream_disconnect(sender);
+        sender->set_enqueue_rt_handler(sender_drop);
+        sender_active = false;
+    }
+}
+
+static void sender_poll (sys_state_t state)
+{
+    // no line from the display for too long: the WiFi connection cannot be up any more
+    if(sender_active && hal.get_elapsed_ticks() - last_rx > DL_TIMEOUT_MS)
+        sender_connect(false);
+
+    if(sender_stop && (state & STATE_HOLD) && sys.holding_state == Hold_Complete) {
+        if(spindle_is_on())
+            grbl.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_STOP);
+        sender_stop = false;
+    }
+    if(sender_stop && !(state & (STATE_CYCLE | STATE_HOLD | STATE_JOG)))
+        sender_stop = false;
+}
+
+// ------------------------------------------------------------------------
 // Receiving
 // ------------------------------------------------------------------------
 
@@ -758,6 +819,9 @@ static void handle_line (char *line)
 
     else if(!strncmp(line, "SR,", 3))
         setting_resend(strtoul(line + 3, NULL, 10));
+
+    else if(!strncmp(line, "TC,", 3))
+        sender_connect(line[3] == '1');
 }
 
 static void receive (void)
@@ -874,6 +938,7 @@ static void dl_realtime (sys_state_t state)
     pulse_poll(state);
     pv_poll(state);
     settings_poll();
+    sender_poll(state);
 
     if(now - last_status >= DL_PERIOD_MS) {
         last_status = now;
@@ -892,7 +957,9 @@ static void dl_report_options (bool newopt)
 
     if(!newopt)
         report_plugin("Display link", dl_stream == NULL ? DL_VERSION " (no serial port)" :
-                       (hal.get_elapsed_ticks() - last_rx < DL_TIMEOUT_MS ? DL_VERSION " (connected)" : DL_VERSION " (no display)"));
+                       (hal.get_elapsed_ticks() - last_rx < DL_TIMEOUT_MS ?
+                        (sender_active ? DL_VERSION " (connected, WiFi sender active)" : DL_VERSION " (connected)") :
+                        DL_VERSION " (no display)"));
 }
 
 // ------------------------------------------------------------------------
@@ -907,6 +974,10 @@ void display_link_init (void)
 
     on_execute_realtime = grbl.on_execute_realtime;
     grbl.on_execute_realtime = dl_realtime;
+
+#if DISPLAY_LINK_SENDER_STREAM != 255
+    sender = stream_open_instance(DISPLAY_LINK_SENDER_STREAM, DISPLAY_LINK_SENDER_BAUD, sender_drop, "WiFi sender");
+#endif
 
     prev_status_message = grbl.report.status_message;
     grbl.report.status_message = dl_status_message;

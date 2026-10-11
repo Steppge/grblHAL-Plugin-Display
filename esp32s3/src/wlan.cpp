@@ -8,6 +8,8 @@
 #include <Update.h>
 #include <Preferences.h>
 #include "wlan.h"
+#include "pins.h"
+#include "link.h"
 
 wifi_cfg_t wifi_cfg = {};
 
@@ -21,13 +23,81 @@ static void (*on_progress)(unsigned pct) = NULL;
 static bool scanning = false;
 static int scan_n = 0;
 static char scan_ssid[WIFI_SCAN_MAX][33];
+static char host[33] = WIFI_HOST_DEFAULT;
+
+// sender bridge: TCP connection <-> second UART to the controller
+static WiFiServer sender_server(SENDER_PORT);
+static WiFiClient sender_client;
+static HardwareSerial &sender_uart = Serial2;
+static bool sender_on = false;
+
+static void sender_close (void)
+{
+    if(sender_client)
+        sender_client.stop();
+    if(sender_on)
+        link_send("TC,0");
+    sender_on = false;
+}
+
+// One sender at a time, bytes are passed through unchanged in both directions.
+static void sender_poll (void)
+{
+    if(sender_server.hasClient()) {
+        WiFiClient c = sender_server.accept();
+        if(sender_client && sender_client.connected())
+            c.stop();               // busy
+        else {
+            sender_client = c;
+            sender_client.setNoDelay(true);
+            while(sender_uart.available())
+                sender_uart.read();
+            sender_on = true;
+            link_send("TC,1");
+        }
+    }
+
+    if(sender_on && !sender_client.connected()) {
+        sender_close();
+        return;
+    }
+
+    if(sender_on) {
+        uint8_t buf[512];
+        int n;
+        if((n = sender_client.available()) > 0) {
+            n = sender_client.read(buf, min(n, (int)sizeof(buf)));
+            if(n > 0)
+                sender_uart.write(buf, n);
+        }
+        if((n = sender_uart.available()) > 0) {
+            n = sender_uart.read(buf, min(n, (int)sizeof(buf)));
+            if(n > 0)
+                sender_client.write(buf, n);
+        }
+
+        // the controller may have restarted: repeat the connection state once a second
+        static uint32_t last = 0;
+        if(millis() - last >= 1000) {
+            last = millis();
+            link_send("TC,1");
+        }
+    } else {
+        while(sender_uart.available())
+            sender_uart.read();     // nothing to pass it to
+    }
+}
 
 static void services_start (void)
 {
-    MDNS.begin(WIFI_HOST);
+    MDNS.begin(host);
+
+    sender_server.begin();
+    sender_server.setNoDelay(true);
+    MDNS.addService("telnet", "tcp", SENDER_PORT);
 
     if(*wifi_cfg.ota) {
-        ArduinoOTA.setHostname(WIFI_HOST);
+        ArduinoOTA.setHostname(host);
         ArduinoOTA.setPassword(wifi_cfg.ota);
         ArduinoOTA.setMdnsEnabled(false);   // MDNS is started above
         ArduinoOTA.begin();
@@ -48,6 +118,8 @@ static void services_start (void)
 static void services_stop (void)
 {
     if(services) {
+        sender_close();
+        sender_server.end();
         ArduinoOTA.end();
         server.stop();
         MDNS.end();
@@ -67,7 +139,8 @@ static void start (void)
     }
 
     WiFi.mode(WIFI_STA);
-    WiFi.setHostname(WIFI_HOST);
+    WiFi.setHostname(host);
+    WiFi.setSleep(false);       // short response times for the sender
     WiFi.setAutoReconnect(true);
     WiFi.begin(wifi_cfg.ssid, wifi_cfg.pass);
     state = Wifi_Connecting;
@@ -80,6 +153,13 @@ void wifi_begin (void (*progress)(unsigned pct))
     prefs.begin("wifi", false);
     if(prefs.getBytesLength("cfg") == sizeof(wifi_cfg))
         prefs.getBytes("cfg", &wifi_cfg, sizeof(wifi_cfg));
+    prefs.getString("host", host, sizeof(host));
+    if(!*host)
+        strcpy(host, WIFI_HOST_DEFAULT);
+
+    sender_uart.setRxBufferSize(4096);
+    sender_uart.setTxBufferSize(4096);
+    sender_uart.begin(SENDER_BAUD, SERIAL_8N1, PIN_SENDER_RX, PIN_SENDER_TX);
 
     // progress of both update paths, the display shows it
     Update.onProgress([](size_t done, size_t total) {
@@ -111,6 +191,11 @@ void wifi_poll (bool updates_allowed)
         state = Wifi_Connecting;    // reconnects by itself
         services_stop();
     }
+
+    if(state == Wifi_Connected && services)
+        sender_poll();
+    else if(sender_on)
+        sender_close();
 
     // while a job runs update requests are not answered at all
     if(state == Wifi_Connected && services && updates_allowed && *wifi_cfg.ota) {
@@ -164,6 +249,32 @@ int wifi_scan_result (void)
 const char *wifi_scan_ssid (int i)
 {
     return i >= 0 && i < scan_n ? scan_ssid[i] : "";
+}
+
+const char *wifi_host (void)
+{
+    return host;
+}
+
+void wifi_set_host (const char *name)
+{
+    char h[33];
+    size_t n = 0;
+
+    for(; *name && n < sizeof(h) - 1; name++) {
+        char c = *name >= 'A' && *name <= 'Z' ? *name + 32 : *name;
+        if((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (c == '-' && n))
+            h[n++] = c;
+    }
+    h[n] = '\0';
+
+    strlcpy(host, n ? h : WIFI_HOST_DEFAULT, sizeof(host));
+    prefs.putString("host", host);
+}
+
+bool wifi_sender (void)
+{
+    return sender_on;
 }
 
 wifi_state_t wifi_state (void)

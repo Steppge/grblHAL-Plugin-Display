@@ -17,3 +17,9 @@
 #define PIN_LINK_TX     17  // to Octopus PD6 (RX)
 #define PIN_LINK_RX     16  // from Octopus PD5 (TX)
 #define LINK_BAUD   115200
+
+// Second UART for a sender (LightBurn) over WiFi, Octopus WIFI socket (USART3, grblHAL stream instance 2)
+#define PIN_SENDER_TX    1  // to Octopus PD9 (RX), WIFI socket pin 16
+#define PIN_SENDER_RX    2  // from Octopus PD8 (TX), WIFI socket pin 15
+#define SENDER_BAUD 921600
+#define SENDER_PORT     23  // TCP port for the sender (telnet)

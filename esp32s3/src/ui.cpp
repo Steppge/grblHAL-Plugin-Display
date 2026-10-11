@@ -119,7 +119,7 @@ static uint32_t set_verify_at = 0;
 static int pending_screen = -1;         // screen change requested from a list row event
 
 // WiFi
-static lv_obj_t *lbl_wifi, *wifi_status, *wifi_dd, *wifi_ta[3], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
+static lv_obj_t *lbl_wifi, *lbl_sender, *wifi_status, *wifi_dd, *wifi_ta[4], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
 static lv_obj_t *wifi_form;             // everything but the keyboard, moved up while typing
 static bool wifi_scanning = false;
 static ui_btn_t *b_wifi_toggle;
@@ -506,6 +506,7 @@ static void screen_show (screen_t s)
         action_run(A_WifiScan, 0);
         lv_textarea_set_text(wifi_ta[1], wifi_cfg.pass);
         lv_textarea_set_text(wifi_ta[2], wifi_cfg.ota);
+        lv_textarea_set_text(wifi_ta[3], wifi_host());
         show(wifi_kb, false);
         lv_obj_set_y(wifi_form, 0);
     }
@@ -627,6 +628,9 @@ static void build_topbar (lv_obj_t *s)
     lv_obj_set_pos(lbl_pwr, 268, 12);
     lbl_wcs = label(s, &lv_font_montserrat_16, COL_WCS, "G54");
     lv_obj_set_pos(lbl_wcs, 370, 12);
+    lbl_sender = label(s, &lv_font_montserrat_14, COL_RING1, "LB");
+    lv_obj_set_pos(lbl_sender, 392, 13);
+    show(lbl_sender, false);
     lbl_wifi = label(s, &lv_font_montserrat_16, 0x50506E, LV_SYMBOL_WIFI);
     lv_obj_set_pos(lbl_wifi, 420, 12);
     lbl_link = label(s, &lv_font_montserrat_16, COL_RED1, LV_SYMBOL_CLOSE);
@@ -995,7 +999,7 @@ static void update_edit (void)
 
 static void build_wifi (lv_obj_t *scr)
 {
-    static const char *names[3] = { "Network", "Password", "OTA password" };
+    static const char *names[4] = { "Network", "Password", "OTA password", "Name" };
     lv_obj_t *s = wifi_form = box(scr, 0, 0, SCR_W, SCR_H);
 
     wifi_status = label(s, &lv_font_montserrat_16, COL_TEXT, "");
@@ -1024,7 +1028,7 @@ static void build_wifi (lv_obj_t *scr)
     lv_dropdown_set_options(wifi_dd, "");
     btn(s, 360, 92, 112, 42, 12, LV_SYMBOL_REFRESH, "Scan", 0, 0, A_WifiScan);
 
-    for(int i = 0; i < 3; i++) {
+    for(int i = 0; i < 4; i++) {
         lv_obj_t *l = label(s, &lv_font_montserrat_16, COL_MUTED, names[i]);
         lv_obj_set_pos(l, 16, 104 + i * 48);
         if(i == 0)
@@ -1033,6 +1037,8 @@ static void build_wifi (lv_obj_t *scr)
         lv_textarea_set_one_line(ta, true);
         lv_textarea_set_password_mode(ta, false);   // visible while typing
         lv_textarea_set_max_length(ta, i == 1 ? 64 : 32);
+        if(i == 3)
+            lv_textarea_set_accepted_chars(ta, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-");
         lv_obj_set_style_text_font(ta, &lv_font_montserrat_16, 0);
         lv_obj_set_size(ta, 206, 42);
         lv_obj_set_pos(ta, 146, 92 + i * 48);
@@ -1244,6 +1250,8 @@ static void action_run (int action, int arg)
                 lv_dropdown_get_selected_str(wifi_dd, wifi_cfg.ssid, sizeof(wifi_cfg.ssid));
             strlcpy(wifi_cfg.pass, lv_textarea_get_text(wifi_ta[1]), sizeof(wifi_cfg.pass));
             strlcpy(wifi_cfg.ota, lv_textarea_get_text(wifi_ta[2]), sizeof(wifi_cfg.ota));
+            wifi_set_host(lv_textarea_get_text(wifi_ta[3]));
+            lv_textarea_set_text(wifi_ta[3], wifi_host());
             show(wifi_kb, false);
             lv_obj_set_y(wifi_form, 0);
             wifi_apply();
@@ -1426,6 +1434,7 @@ static void update_topbar (void)
     snprintf(buf, sizeof(buf), "G%u", 54 + mc.wcs);
     set_text(lbl_wcs, buf);
     set_text(lbl_link, mc.online ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
+    show(lbl_sender, wifi_sender());
     lv_obj_set_style_text_color(lbl_wifi, C(wifi_state() == Wifi_Connected ? COL_GREEN1 :
                                              wifi_state() == Wifi_Connecting ? COL_ORANGE1 : 0x50506E), 0);
     lv_obj_set_style_text_color(lbl_link, C(mc.online ? COL_GREEN1 : COL_RED1), 0);
@@ -1656,7 +1665,7 @@ static void update_screen (void)
                 case Wifi_Off:        set_text(wifi_status, *wifi_cfg.ssid ? "WiFi off" : "WiFi off - enter the network"); break;
                 case Wifi_Connecting: set_text(wifi_status, "Connecting..."); break;
                 case Wifi_Connected:
-                    snprintf(buf, sizeof(buf), "%s  " WIFI_HOST ".local", wifi_ip());
+                    snprintf(buf, sizeof(buf), "%s  %s.local", wifi_ip(), wifi_host());
                     set_text(wifi_status, buf);
                     break;
             }

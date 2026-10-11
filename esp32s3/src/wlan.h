@@ -5,7 +5,7 @@
 // WiFi with firmware updates over the air: ArduinoOTA (PlatformIO environment "ota") and an upload
 // page at http://<host>/update. Settings are stored in NVS and entered on the display.
 
-#define WIFI_HOST "grblhal-display"
+#define WIFI_HOST_DEFAULT "grblhal-display"
 
 enum wifi_state_t { Wifi_Off, Wifi_Connecting, Wifi_Connected };
 
@@ -25,6 +25,10 @@ wifi_state_t wifi_state (void);
 const char *wifi_ip (void);
 
 #define WIFI_SCAN_MAX 16
+
+const char *wifi_host (void);              // machine name: <name>.local, also the DHCP host name
+void wifi_set_host (const char *name);      // stored, only a-z, 0-9 and - are kept, applied by wifi_apply()
+bool wifi_sender (void);                    // a sender (LightBurn) is connected on SENDER_PORT
 
 void wifi_scan_start (void);
 int wifi_scan_result (void);                // -1 while scanning, else the number of networks found
