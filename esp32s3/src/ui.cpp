@@ -40,7 +40,7 @@ enum action_t {
     A_LPwrDn, A_LPwrUp, A_LTimeDn, A_LTimeUp, A_Fire,
     A_SdRefresh, A_SdRun, A_SdPick,
     A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset,
-    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan,
+    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan, A_WebMode,
     A_GpChange, A_GpCancel, A_GpDefaults
 };
 
@@ -69,7 +69,7 @@ static struct {
     uint8_t probe_feed, laser_pwr, laser_time, step;
 } cfg = { 0.0f, 2, 4, 3, 3 };
 
-static ui_btn_t btns[64];
+static ui_btn_t btns[80];
 static int n_btns = 0;
 static screen_t screen = S_Main;
 static lv_obj_t *scr_obj[S_Count];
@@ -153,7 +153,7 @@ static int pending_screen = -1;         // screen change requested from a list r
 static lv_obj_t *lbl_wifi, *wifi_status, *wifi_dd, *wifi_ta[4], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
 static lv_obj_t *wifi_form;             // everything but the keyboard, moved up while typing
 static bool wifi_scanning = false;
-static ui_btn_t *b_wifi_toggle;
+static ui_btn_t *b_wifi_toggle, *b_web;
 static ui_btn_t *b_sd_run;
 static char sd_sel[64] = "";
 static uint16_t files_seq = 0, msg_seq = 0;
@@ -1275,6 +1275,7 @@ static void build_wifi (lv_obj_t *scr)
     lv_obj_set_pos(wifi_dd, 146, 92);
     lv_dropdown_set_options(wifi_dd, "");
     btn(s, 360, 92, 112, 42, 12, LV_SYMBOL_REFRESH, "Scan", 0, 0, A_WifiScan);
+    b_web = btn(s, 360, 140, 112, 42, 12, NULL, "", 0, 0, A_WebMode);     // web interface off / view / control
 
     for(int i = 0; i < 4; i++) {
         lv_obj_t *l = label(s, &lv_font_montserrat_16, COL_MUTED, names[i]);
@@ -1558,6 +1559,19 @@ static void sd_fill (void)
 // Actions
 // ------------------------------------------------------------------------
 
+// also used by the web interface
+void ui_select_file (const char *name)
+{
+    strlcpy(sd_sel, name, sizeof(sd_sel));
+    link_preview(sd_sel);
+    sd_dirty = true;
+}
+
+const char *ui_selected_file (void)
+{
+    return sd_sel;
+}
+
 static void save_cfg (void)
 {
     prefs.putBytes("cfg", &cfg, sizeof(cfg));
@@ -1666,6 +1680,11 @@ static void action_run (int action, int arg)
         case A_WifiToggle:
             wifi_cfg.enabled = !wifi_cfg.enabled;
             wifi_apply();
+            break;
+        case A_WebMode:
+            wifi_set_web_mode((wifi_web_mode() + 1) % 3);
+            if(wifi_web_mode() == 2 && !*wifi_cfg.ota)
+                banner_show("Web control needs an OTA password", COL_ORANGE2, 3000);
             break;
         case A_WifiScan:
             wifi_scan_start();
@@ -2133,6 +2152,8 @@ static void update_screen (void)
                     set_text(wifi_status, buf);
                     break;
             }
+            set_text(b_web->text, wifi_web_mode() == 2 ? "Web: Control" : wifi_web_mode() == 1 ? "Web: View" : "Web: Off");
+            btn_colors(b_web, wifi_web_mode() == 2 ? COL_ORANGE1 : 0, wifi_web_mode() == 2 ? COL_ORANGE2 : 0);
             set_text(b_wifi_toggle->text, wifi_cfg.enabled ? "On" : "Off");
             btn_layout(b_wifi_toggle);
             btn_colors(b_wifi_toggle, wifi_cfg.enabled ? COL_GREEN1 : 0, wifi_cfg.enabled ? COL_GREEN2 : 0);

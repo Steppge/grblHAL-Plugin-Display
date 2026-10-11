@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#070418">
+<title>grblHAL</title>
+<style>
+/* style B3 "Electric", colors as in esp32s3/src/theme.h */
+:root {
+  --bg1: #120e36; --bg2: #070418; --card: rgba(58, 44, 142, .62); --edge: rgba(255, 255, 255, .16);
+  --text: #fff; --muted: #aaaadc; --track: #2d2d5f; --ring1: #00dcff; --ring2: #b450ff; --pwr: #ffdc5a;
+  --x: #ff5252; --y: #3cdc78; --z: #4696ff;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: radial-gradient(circle at 15% 90%, rgba(154, 40, 255, .45), transparent 45%),
+              radial-gradient(circle at 90% 0%, rgba(0, 220, 255, .35), transparent 45%),
+              linear-gradient(var(--bg1), var(--bg2));
+  background-attachment: fixed; color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-user-select: none; user-select: none; touch-action: manipulation; overflow: hidden;
+}
+#app { display: flex; flex-direction: column; height: 100%; padding: 8px; }
+.card { background: var(--card); border: 1px solid var(--edge); border-radius: 16px; }
+
+/* top bar */
+#top { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+#pill { padding: 6px 16px; border-radius: 18px; font-weight: 700; min-width: 96px; text-align: center;
+        background: linear-gradient(90deg, #50506e, #50506e); }
+.info { color: var(--pwr); font-weight: 600; }
+#wcs { color: #ff78c8; font-weight: 600; }
+#snd { display: none; background: var(--ring1); color: var(--bg2); border-radius: 8px; padding: 2px 8px; font-weight: 700; }
+#tabs { margin-left: auto; display: flex; gap: 6px; }
+.tab { padding: 8px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); cursor: pointer; }
+.tab.on { background: linear-gradient(#00ccff, #1c2c9c); border-color: transparent; }
+#lock { padding: 8px 12px; border-radius: 12px; border: 1px solid var(--edge); cursor: pointer; color: var(--muted); }
+#lock.ctl { color: var(--bg2); background: #ffaa28; border-color: transparent; font-weight: 700; }
+
+/* views */
+.view { display: none; flex: 1; min-height: 0; flex-direction: column; gap: 8px; }
+.view.on { display: flex; }
+#mainTop { flex: 1; min-height: 0; display: flex; gap: 8px; }
+#mapCard { flex: 3; position: relative; min-width: 0; min-height: 180px; padding: 6px 30px 6px 6px; }
+#map { width: 100%; height: 100%; display: block; border-radius: 10px; }
+#mapName { position: absolute; left: 14px; top: 10px; color: var(--muted); font-size: 13px; }
+#zbar { position: absolute; right: 9px; top: 10px; bottom: 10px; width: 10px; border-radius: 5px; background: var(--track); }
+#zzero { position: absolute; left: -4px; width: 18px; height: 2px; background: var(--pwr); }
+#ztool { position: absolute; left: -5px; width: 20px; height: 8px; border-radius: 4px; background: var(--ring1);
+         box-shadow: 0 0 10px var(--ring1); }
+.mapBtns { position: absolute; right: 36px; bottom: 10px; display: flex; gap: 6px; }
+.mini { width: 40px; height: 40px; border-radius: 20px; background: rgba(20, 22, 50, .85); border: 1px solid var(--edge);
+        display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 18px; }
+.mini.off { opacity: .35; }
+#dro { flex: 2; min-width: 0; padding: 10px 16px; display: flex; flex-direction: column; justify-content: center; cursor: pointer; }
+.axis { display: flex; align-items: baseline; justify-content: space-between; }
+.axis b { font-size: 26px; width: 30px; }
+.axis span.v { font-size: clamp(30px, 6vw, 64px); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mach { color: var(--muted); font-size: 13px; text-align: right; margin: -4px 0 6px; font-variant-numeric: tabular-nums; }
+#prog { height: 8px; border-radius: 4px; background: var(--track); margin-top: 6px; display: none; }
+#progFill { height: 8px; border-radius: 4px; width: 0; background: linear-gradient(90deg, var(--ring1), var(--ring2)); }
+#sub { color: var(--muted); font-size: 14px; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* buttons */
+#row { display: flex; gap: 8px; height: 76px; }
+.b { position: relative; flex: 1; border-radius: 16px; border: 1px solid var(--edge); background: var(--card);
+     color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center;
+     font-size: 15px; cursor: pointer; overflow: hidden; min-width: 0; }
+.b i { font-style: normal; font-size: 22px; line-height: 1.1; }
+.b.feed { background: linear-gradient(#00ccff, #1c2c9c); border-color: transparent; }
+.b.pwr { background: linear-gradient(#c45cff, #4a1494); border-color: transparent; }
+.b.orange { background: linear-gradient(#ffaa28, #a8400c); border-color: transparent; }
+.b.green { background: linear-gradient(#2cf086, #006b3e); border-color: transparent; }
+.b.red { background: linear-gradient(#ff465a, #780418); border-color: transparent; }
+.b.off { background: rgba(58, 44, 142, .35); color: rgba(170, 170, 220, .55); border-color: var(--edge); }
+.b.down { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .8); }
+.bar { position: absolute; left: 10px; bottom: 6px; height: 4px; border-radius: 2px; background: #fff; width: 0; }
+
+/* jog */
+#jog { flex-direction: row; flex-wrap: wrap; align-content: flex-start; }
+#jogPos { width: 100%; font-size: 20px; font-variant-numeric: tabular-nums; padding: 4px 6px; }
+#pad { display: grid; grid-template-columns: repeat(3, 84px); grid-template-rows: repeat(3, 84px); gap: 8px; }
+#zpad { display: flex; flex-direction: column; gap: 8px; width: 84px; }
+#zpad .b { height: 130px; flex: none; }
+#steps { display: flex; flex-direction: column; gap: 6px; width: 120px; }
+#steps .b { height: 44px; flex: none; }
+#jogStop { width: 100%; height: 56px; flex: none; }
+
+/* sd */
+#sdList { flex: 1; overflow-y: auto; padding: 6px; -webkit-overflow-scrolling: touch; }
+.file { padding: 12px 14px; border-radius: 10px; margin-bottom: 6px; background: rgba(58, 44, 142, .45); cursor: pointer;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file.sel { background: #1c2c9c; }
+#sdBtns { display: flex; gap: 8px; height: 64px; }
+#sdMsg { color: var(--muted); padding: 4px 6px; }
+
+/* zoom */
+#zoom { display: none; position: fixed; inset: 0; left: 0; top: 0; right: 0; bottom: 0; background: var(--bg2); z-index: 5; }
+#zoomMap { width: 100%; height: 100%; display: block; }
+#zoomBack { position: absolute; left: 12px; top: 12px; width: 52px; height: 52px; border-radius: 26px; font-size: 22px; }
+#zoomChip { position: absolute; left: 76px; top: 18px; background: rgba(20, 22, 50, .85); border-radius: 18px; padding: 8px 14px; }
+#stop { position: absolute; right: 18px; bottom: 18px; width: 120px; height: 120px; border-radius: 60px; font-size: 18px;
+        font-weight: 700; border: 3px solid #ffc8c8; box-shadow: 0 0 30px rgba(255, 40, 60, .6); }
+
+/* banner and login */
+#banner { display: none; position: fixed; left: 50%; top: 56px; transform: translateX(-50%); max-width: 92%; padding: 12px 18px;
+          border-radius: 12px; z-index: 10; text-align: center; cursor: pointer; }
+#login { display: none; position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(7, 4, 24, .85); z-index: 20;
+         align-items: center; justify-content: center; }
+#login .card { padding: 22px; width: 320px; max-width: 92%; }
+#login input { width: 100%; font-size: 18px; padding: 10px; border-radius: 10px; border: 1px solid var(--edge);
+               background: #0e1024; color: #fff; margin: 12px 0; }
+#login .row { display: flex; gap: 8px; height: 52px; }
+.muted { color: var(--muted); }
+
+/* narrow screens: map above the position */
+@media (max-width: 720px) {
+  #mainTop { flex-direction: column; }
+  #mapCard { flex: 1; }
+  #dro { flex: none; padding: 6px 14px; }
+  .axis span.v { font-size: 30px; }
+  #row { height: 64px; gap: 6px; }
+  .b { font-size: 13px; }
+  #tabs .tab { padding: 8px 10px; }
+  #pad { grid-template-columns: repeat(3, 70px); grid-template-rows: repeat(3, 70px); }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div id="pill">NO LINK</div>
+    <span class="info" id="feed">F 0</span>
+    <span class="info" id="pwr">S 0</span>
+    <span id="wcs">G54</span>
+    <span id="snd">Sender</span>
+    <div id="tabs">
+      <div class="tab on" data-v="main">Main</div>
+      <div class="tab" data-v="jog">Move</div>
+      <div class="tab" data-v="sd">SD card</div>
+      <div id="lock">View only</div>
+    </div>
+  </div>
+
+  <div class="view on" id="main">
+    <div id="mainTop">
+      <div class="card" id="mapCard">
+        <canvas id="map"></canvas>
+        <div id="mapName"></div>
+        <div id="zbar"><div id="zzero"></div><div id="ztool"></div></div>
+        <div class="mapBtns"><div class="mini" id="viewBtn">&#9635;</div><div class="mini" id="zoomBtn">&#10530;</div></div>
+      </div>
+      <div class="card" id="dro">
+        <div class="axis"><b style="color:var(--x)">X</b><span class="v" id="vx">0.00</span></div><div class="mach" id="mx"></div>
+        <div class="axis"><b style="color:var(--y)">Y</b><span class="v" id="vy">0.00</span></div><div class="mach" id="my"></div>
+        <div class="axis"><b style="color:var(--z)">Z</b><span class="v" id="vz">0.00</span></div><div class="mach" id="mz"></div>
+        <div id="prog"><div id="progFill"></div></div>
+        <div id="sub"></div>
+      </div>
+    </div>
+    <div id="row"></div>
+  </div>
+
+  <div class="view" id="jog">
+    <div id="jogPos" class="card"></div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div id="pad"></div>
+      <div id="zpad"></div>
+      <div id="steps"></div>
+    </div>
+  </div>
+
+  <div class="view" id="sd">
+    <div class="card" id="sdList"></div>
+    <div id="sdMsg"></div>
+    <div id="sdBtns"></div>
+  </div>
+</div>
+
+<div id="zoom">
+  <canvas id="zoomMap"></canvas>
+  <div class="mini" id="zoomBack">&#8592;</div>
+  <div id="zoomChip"></div>
+  <div class="b red" id="stop">STOP</div>
+</div>
+
+<div id="banner"></div>
+
+<div id="login">
+  <div class="card">
+    <div style="font-size:20px;font-weight:700">Control the machine</div>
+    <div class="muted" style="margin-top:6px">OTA password of the display</div>
+    <input id="pass" type="password" autocomplete="current-password">
+    <div class="row"><div class="b" id="loginNo">Cancel</div><div class="b green" id="loginOk">OK</div></div>
+  </div>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+// grblHAL state bits and display link flags, see esp32s3/src/link.h
+var ST_ALARM = 1, ST_HOMING = 4, ST_CYCLE = 8, ST_HOLD = 16, ST_JOG = 32, ST_DOOR = 64, ST_SLEEP = 128,
+    ST_ESTOP = 256, ST_TOOL = 512, ST_CHECK = 2;
+var F_BLOCKING = 1, F_HOLD_DONE = 2, F_SPINDLE = 4, F_LIMIT = 8, F_HOMING_LOCK = 16, F_FORCE_UNLOCK = 32;
+var HOLD_MS = 600, FORCE_MS = 3000;
+var STEPS = [0.01, 0.05, 0.1, 1, 10];
+
+var S = null, token = store('tok') || '', view = 'main', showPreview = false, zoomOn = false;
+var trace = [], lastOn = false, lastPos = null, lastSt = 0, jobError = false;
+var seen = null, pvSeq = -1, pv = null, pvImg = null, files = [], fileSeq = 0;
+var step = parseFloat(store('step')) || 1;
+
+function $(id) { return document.getElementById(id); }
+function store(k, v) {
+  try { if(v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch(e) {}
+  return null;
+}
+function txt(el, t) { if(el.textContent !== t) el.textContent = t; }
+function fmt(v) { return (Math.round(v * 100) / 100).toFixed(2); }
+
+// ---------------------------------------------------------------- requests
+
+function req(method, url, body, cb) {
+  var x = new XMLHttpRequest();
+  x.open(method, url, true);
+  x.timeout = 4000;
+  if(token) x.setRequestHeader('X-Token', token);
+  if(body !== null) x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+  x.onload = function () { cb(x.status, x.responseText); };
+  x.onerror = x.ontimeout = function () { cb(0, ''); };
+  x.send(body);
+}
+
+function act(a, args) {
+  if(!S || !S.ctl) { needControl(); return; }
+  req('POST', '/api/cmd', 'a=' + encodeURIComponent(a) + (args || ''), function (code, t) {
+    if(code === 403) { token = ''; store('tok', ''); needControl(); }
+    else if(code !== 200) banner(t || 'No answer', 'orange', 3000);
+  });
+}
+
+function needControl() {
+  if(S && S.web === 2) { $('login').style.display = 'flex'; $('pass').value = ''; $('pass').focus(); }
+  else banner('View only - control can be switched on at the display (Menu - WiFi - Web)', 'orange', 4000);
+}
+
+function login() {
+  req('POST', '/api/login', 'pass=' + encodeURIComponent($('pass').value), function (code, t) {
+    if(code === 200) {
+      token = JSON.parse(t).token;
+      store('tok', token);
+      $('login').style.display = 'none';
+    } else
+      banner(t || 'No answer', 'red', 3000);
+  });
+}
+
+// ---------------------------------------------------------------- banner
+
+var bannerTimer = null;
+function banner(t, color, ms) {
+  var b = $('banner'), c = { red: '#780418', orange: '#a8400c', green: '#006b3e' };
+  b.textContent = t;
+  b.style.background = c[color] || c.orange;
+  b.style.display = 'block';
+  clearTimeout(bannerTimer);
+  if(ms) bannerTimer = setTimeout(function () { b.style.display = 'none'; }, ms);
+}
+$('banner').onclick = function () { this.style.display = 'none'; };
+
+var errText = { 1: 'Expected command letter', 2: 'Bad number format', 3: 'Invalid $ statement', 9: 'Locked (alarm or job)',
+  10: 'Soft limit', 15: 'Jog beyond travel', 16: 'Invalid jog command', 20: 'Unsupported G-code', 22: 'Feed rate missing',
+  33: 'Invalid target', 45: 'Limit switch engaged', 46: 'Homing required', 52: 'Setting value out of range',
+  60: 'SD card not mounted', 61: 'File read error', 75: 'Expression error' };
+
+// ---------------------------------------------------------------- buttons
+
+// tap: on release (or on press with press = true), hold: after holding for ms, a bar shows the time
+function button(el, b) {
+  el._b = b || {};
+  if(!el.querySelector('.bar')) { var line = document.createElement('div'); line.className = 'bar'; el.appendChild(line); }
+  if(el._bound) return el;
+  el._bound = true;
+
+  var timer = null, fired = true, active = false;
+  function bar(on, ms) {
+    var r = el.querySelector('.bar');
+    r.style.transition = on ? 'width ' + ms + 'ms linear' : 'none';
+    r.style.width = on ? 'calc(100% - 20px)' : '0';
+  }
+  function down(e) {
+    var b = el._b;
+    if(e.cancelable) e.preventDefault();
+    if(b.off) { if(S && !S.ctl && b.ctl) needControl(); return; }
+    active = true; fired = false;
+    el.classList.add('down');
+    if(b.press && b.tap) { fired = true; b.tap(); }
+    if(b.hold) {
+      setTimeout(function () { if(active && !fired) bar(true, (b.ms || HOLD_MS) - 120); }, 120);
+      timer = setTimeout(function () { fired = true; bar(false); b.hold(); }, b.ms || HOLD_MS);
+    }
+  }
+  function up(e, cancel) {
+    if(!active) return;
+    active = false;
+    clearTimeout(timer); bar(false);
+    el.classList.remove('down');
+    if(!cancel && !fired && el._b.tap && !el._b.press) el._b.tap();
+    fired = true;
+  }
+  if(window.PointerEvent) {
+    el.addEventListener('pointerdown', down);
+    el.addEventListener('pointerup', function (e) { up(e, false); });
+    el.addEventListener('pointercancel', function (e) { up(e, true); });
+    el.addEventListener('pointerleave', function (e) { up(e, true); });
+  } else {
+    el.addEventListener('touchstart', down);
+    el.addEventListener('touchend', function (e) { up(e, false); });
+    el.addEventListener('touchcancel', function (e) { up(e, true); });
+    el.addEventListener('mousedown', down);
+    el.addEventListener('mouseup', function (e) { up(e, false); });
+    el.addEventListener('mouseleave', function (e) { up(e, true); });
+  }
+  return el;
+}
+
+function setBtn(el, icon, text, cls, b, enabled, needsCtl) {
+  var html = (icon ? '<i>' + icon + '</i>' : '') + '<span>' + text + '</span>';
+  if(el._html !== html) { el.innerHTML = html; el._html = html; }
+  b = b || {};
+  b.ctl = needsCtl !== false;
+  b.off = !enabled || (b.ctl && !(S && S.ctl));
+  el.className = 'b ' + (b.off ? 'off' : (cls || ''));
+  button(el, b);
+}
+
+function make(parent, n) {
+  var r = [];
+  for(var i = 0; i < n; i++) { var d = document.createElement('div'); d.className = 'b'; parent.appendChild(d); r.push(d); }
+  return r;
+}
+
+var row = make($('row'), 6);
+
+// ---------------------------------------------------------------- views
+
+function showView(v) {
+  view = v;
+  var tabs = document.querySelectorAll('.tab');
+  for(var i = 0; i < tabs.length; i++) tabs[i].className = 'tab' + (tabs[i].getAttribute('data-v') === v ? ' on' : '');
+  var views = document.querySelectorAll('.view');
+  for(i = 0; i < views.length; i++) views[i].className = 'view' + (views[i].id === v ? ' on' : '');
+  if(v === 'sd') sdRefresh();
+  draw();
+}
+(function () {
+  var tabs = document.querySelectorAll('.tab');
+  for(var i = 0; i < tabs.length; i++) tabs[i].onclick = function () { showView(this.getAttribute('data-v')); };
+})();
+$('dro').onclick = function () { showView('jog'); };
+$('lock').onclick = function () {
+  if(S && S.ctl) { if(confirm('Log out on this device?')) { token = ''; store('tok', ''); } }
+  else needControl();
+};
+$('loginOk').onclick = login;
+$('loginNo').onclick = function () { $('login').style.display = 'none'; };
+$('pass').onkeydown = function (e) { if(e.keyCode === 13) login(); };
+$('viewBtn').onclick = function () { if(pv && pv.v) { showPreview = !showPreview; draw(); } };
+$('zoomBtn').onclick = function () { zoomOn = true; $('zoom').style.display = 'block'; draw(); };
+$('zoomBack').onclick = function () { zoomOn = false; $('zoom').style.display = 'none'; draw(); };
+button($('stop'), { press: true, tap: function () { act('stop'); } });
+
+// jog screen
+(function () {
+  var pad = make($('pad'), 9), z = make($('zpad'), 2), st = make($('steps'), STEPS.length);
+  var jogBtns = [], cells = [null, ['Y', 1, '&#9650;', 'Y+'], null, ['X', -1, '&#9664;', 'X-'], null, ['X', 1, '&#9654;', 'X+'],
+                 null, ['Y', -1, '&#9660;', 'Y-'], null];
+  for(var i = 0; i < 9; i++) {
+    if(!cells[i]) { pad[i].style.visibility = 'hidden'; continue; }
+    jogBtns.push([pad[i], cells[i]]);
+  }
+  jogBtns.push([z[0], ['Z', 1, '&#9650;', 'Z+']], [z[1], ['Z', -1, '&#9660;', 'Z-']]);
+  window._jog = jogBtns;
+  window._steps = st;
+  var stop = document.createElement('div');
+  stop.className = 'b'; stop.id = 'jogStop';
+  $('jog').appendChild(stop);
+  window._jogStop = stop;
+})();
+
+function updateJog() {
+  var idle = S.on && S.st === 0, jogging = !!(S.st & ST_JOG);
+  txt($('jogPos'), 'X ' + fmt(S.w[0]) + '    Y ' + fmt(S.w[1]) + '    Z ' + fmt(S.w[2]) + '    step ' + step + ' mm');
+  window._jog.forEach(function (j) {
+    var c = j[1];
+    setBtn(j[0], c[2], c[3], c[0] === 'Z' ? 'pwr' : 'feed',
+           { tap: function () { act('jog', '&ax=' + c[0] + '&d=' + c[1] * step); } }, idle || jogging);
+  });
+  window._steps.forEach(function (el, i) {
+    setBtn(el, '', STEPS[i] + ' mm', STEPS[i] === step ? 'green' : '',
+           { tap: function () { step = STEPS[i]; store('step', step); updateJog(); } }, true, false);
+  });
+  setBtn(window._jogStop, '', 'Stop jog', 'orange', { tap: function () { act('jog_cancel'); } }, jogging);
+}
+
+// sd screen
+var sdBtns = make($('sdBtns'), 2);
+function sdRefresh() {
+  txt($('sdMsg'), 'Loading...');
+  req('POST', '/api/files', '', function () { setTimeout(sdPoll, 300); });
+}
+function sdPoll() {
+  req('GET', '/api/files', null, function (code, t) {
+    if(code !== 200) { txt($('sdMsg'), 'No answer'); return; }
+    var r = JSON.parse(t);
+    if(!r.done) { setTimeout(sdPoll, 300); return; }
+    files = r.count < 0 ? [] : r.names;
+    txt($('sdMsg'), r.count < 0 ? 'No SD card' : files.length ? '' : 'No files');
+    sdFill();
+  });
+}
+function sdFill() {
+  var l = $('sdList'), sel = S ? S.sel : '';
+  l.innerHTML = '';
+  files.forEach(function (f) {
+    var d = document.createElement('div');
+    d.className = 'file' + (f === sel ? ' sel' : '');
+    d.textContent = f;
+    d.onclick = function () { act('load', '&f=' + encodeURIComponent(f)); };
+    l.appendChild(d);
+  });
+}
+function updateSd() {
+  var idle = S.on && S.st === 0;
+  setBtn(sdBtns[0], '&#8635;', 'Refresh', '', { tap: sdRefresh }, true, false);
+  setBtn(sdBtns[1], '&#10003;', 'Load', 'green', { tap: function () { showView('main'); } }, idle && !!S.sel, false);
+  if(S.sel !== sdFill._sel) { sdFill._sel = S.sel; sdFill(); }
+}
+
+// ---------------------------------------------------------------- main screen
+
+function stateInfo() {
+  var st = S.st, a = S.al;
+  if(!S.on) return ['NO LINK', '#50506e', '#50506e'];
+  if(st & ST_ESTOP) return ['E-STOP', '#ff465a', '#780418'];
+  if(st & ST_ALARM) {
+    var t = { 1: 'HARD LIM', 2: 'SOFT LIM', 3: 'ABORTED', 4: 'PROBE ERR', 5: 'PROBE ERR', 6: 'HOME FAIL', 7: 'HOME FAIL',
+              8: 'HOME FAIL', 9: 'HOME FAIL', 10: 'E-STOP', 11: 'NO HOME', 12: 'LIMIT ON' }[a] || 'ALARM ' + a;
+    return [t, '#ff465a', '#780418'];
+  }
+  if(st & ST_DOOR) return ['DOOR', '#ffaa28', '#a8400c'];
+  if(st & ST_HOMING) return ['Homing', '#c45cff', '#4a1494'];
+  if(st & ST_HOLD) return ['Hold', '#ffaa28', '#a8400c'];
+  if(st & ST_TOOL) return ['Tool', '#ffaa28', '#a8400c'];
+  if(st & ST_JOG) return ['Jog', '#7850ff', '#00c8ff'];
+  if(st & ST_CYCLE) return ['Running', '#7850ff', '#00c8ff'];
+  if(st & ST_CHECK) return ['Check', '#ffaa28', '#a8400c'];
+  if(st & ST_SLEEP) return ['Sleep', '#50506e', '#50506e'];
+  return ['Idle', '#2cf086', '#006b3e'];
+}
+
+function updateTop() {
+  var si = stateInfo();
+  txt($('pill'), si[0]);
+  $('pill').style.background = 'linear-gradient(90deg,' + si[1] + ',' + si[2] + ')';
+  txt($('feed'), 'F ' + Math.round(S.f));
+  txt($('pwr'), S.mode === 1 && S.smax > 0 ? 'P ' + Math.round(S.s * 100 / S.smax) + ' %' : 'S ' + Math.round(S.s));
+  txt($('wcs'), 'G' + (54 + S.wcs));
+  $('snd').style.display = S.snd ? 'inline' : 'none';
+  txt($('lock'), S.ctl ? 'Control' : 'View only');
+  $('lock').className = S.ctl ? 'ctl' : '';
+  document.title = si[0] + ' - ' + S.host;
+}
+
+function updateMain() {
+  var st = S.st, fl = S.fl, on = S.on;
+  var idle = on && st === 0, alarm = on && !!(st & (ST_ALARM | ST_ESTOP));
+  var job = !!(st & (ST_CYCLE | ST_HOLD | ST_TOOL)), held = !!(st & (ST_HOLD | ST_TOOL));
+  var holdDone = !!(st & ST_HOLD) && !!(fl & F_HOLD_DONE);
+
+  txt($('vx'), fmt(S.w[0])); txt($('vy'), fmt(S.w[1])); txt($('vz'), fmt(S.w[2]));
+  txt($('mx'), 'machine ' + fmt(S.m[0])); txt($('my'), 'machine ' + fmt(S.m[1])); txt($('mz'), 'machine ' + fmt(S.m[2]));
+  $('prog').style.display = job && S.pct >= 0 ? 'block' : 'none';
+  $('progFill').style.width = Math.max(0, S.pct) / 10 + '%';
+  txt($('sub'), job ? (S.pct >= 0 ? Math.floor(S.pct / 10) + ' %  ' + S.job : 'Job') : (S.sel || 'work offset G' + (54 + S.wcs)));
+
+  if(job) {
+    setBtn(row[0], '&minus;', 'Feed', 'feed', { tap: function () { act('feed-'); }, hold: function () { act('feed0'); } }, on);
+    setBtn(row[1], '+', 'Feed', 'feed', { tap: function () { act('feed+'); }, hold: function () { act('feed0'); } }, on);
+    setBtn(row[2], '&minus;', 'Power', 'pwr', { tap: function () { act('power-'); }, hold: function () { act('power0'); } }, on);
+    setBtn(row[3], '+', 'Power', 'pwr', { tap: function () { act('power+'); }, hold: function () { act('power0'); } }, on);
+  } else {
+    setBtn(row[0], '&#8962;', 'Home', 'feed', { hold: function () { act('home'); } }, idle || alarm);
+    if(jobError && !alarm)
+      setBtn(row[1], '&#9888;', 'Reset', 'orange', { tap: function () { jobError = false; act('reset'); } }, on);
+    else if(fl & F_BLOCKING)
+      setBtn(row[1], '&#9888;', 'Reset', 'red', { tap: function () { act('reset'); } }, true);
+    else if(alarm && (fl & F_HOMING_LOCK))
+      setBtn(row[1], '&#8635;', 'Hold 3s', 'orange', { hold: function () { act('force_unlock'); }, ms: FORCE_MS }, !!(fl & F_FORCE_UNLOCK));
+    else
+      setBtn(row[1], '&#8635;', 'Unlock', alarm ? 'orange' : '', { tap: function () { act('unlock'); } }, alarm && !(fl & F_LIMIT));
+    setBtn(row[2], '&#8982;', 'X0 Y0', 'feed', { hold: function () { act('zero_xy'); } }, idle);
+    setBtn(row[3], '&#8615;', 'Z0', 'feed', { hold: function () { act('zero_z'); } }, idle);
+  }
+
+  if(holdDone)
+    setBtn(row[4], '&#9632;', 'Stop', 'red', { hold: function () { act('reset'); } }, true);
+  else
+    setBtn(row[4], '&#10074;&#10074;', 'Hold', 'orange', { tap: function () { act('hold'); }, press: true },
+           on && !!(st & (ST_CYCLE | ST_JOG)));
+
+  if(held)
+    setBtn(row[5], '&#9654;', 'Resume', 'green', { tap: function () { act('resume'); } }, true);
+  else if(S.sel)
+    setBtn(row[5], '&#9654;', 'Start', idle ? 'green' : '', { tap: function () { showView('sd'); }, hold: function () { act('start'); } }, idle);
+  else
+    setBtn(row[5], '&#128190;', 'Load', '', { tap: function () { showView('sd'); } }, idle, false);
+
+  // zoom view
+  var chip = holdDone ? ((fl & F_SPINDLE) ? 'Stopped' : 'Stopped - laser off') :
+             (S.pct >= 0 && job ? Math.floor(S.pct / 10) + ' %' : 'X ' + fmt(S.w[0]) + '  Y ' + fmt(S.w[1]));
+  txt($('zoomChip'), chip);
+  txt($('stop'), holdDone ? 'ABORT' : 'STOP');
+  $('stop').className = 'b red' + (S.ctl ? '' : ' off');
+  $('stop')._b.off = !S.ctl;
+  $('stop')._b.ctl = true;
+
+  // z bar: machine Z range, work zero, tool
+  var t = S.tr[2] > 1 ? S.tr[2] : 100, zmin, zmax;
+  if(S.env[0] && S.env[5] < -0.5) { zmin = S.env[5]; zmax = zmin + t; }
+  else { zmin = S.m[2] > 0.5 ? 0 : -t; zmax = zmin + t; }
+  var h = $('zbar').clientHeight, f = Math.min(1, Math.max(0, (S.m[2] - zmin) / (zmax - zmin)));
+  $('ztool').style.top = Math.round((1 - f) * (h - 8)) + 'px';
+  var z0 = S.m[2] - S.w[2];
+  $('zzero').style.display = z0 >= zmin && z0 <= zmax ? 'block' : 'none';
+  $('zzero').style.top = Math.round((1 - (z0 - zmin) / (zmax - zmin)) * (h - 2)) + 'px';
+
+  $('viewBtn').className = 'mini' + (pv && pv.v ? '' : ' off');
+  txt($('mapName'), pv && pv.v && (showPreview || zoomOn) ? pv.name : (S.pvl ? 'Loading preview...' : ''));
+}
+
+// ---------------------------------------------------------------- map
+
+function extent() {
+  var tx = S.tr[0] > 1 ? S.tr[0] : 300, ty = S.tr[1] > 1 ? S.tr[1] : 300;
+  if(S.env[0]) return [S.env[1], S.env[2], S.env[3], S.env[4]];
+  var x0 = S.m[0] > 0.5 ? 0 : -tx, y0 = S.m[1] > 0.5 ? 0 : -ty;
+  return [x0, y0, x0 + tx, y0 + ty];
+}
+
+// preview bounds in machine coordinates
+function pvBox(margin) {
+  var ox = S.m[0] - S.w[0], oy = S.m[1] - S.w[1];
+  return [pv.x0 + ox - margin, pv.y0 + oy - margin, pv.x1 + ox + margin, pv.y1 + oy + margin];
+}
+
+function fit(cv, box) {
+  var r = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if(cv.width !== Math.round(w * r) || cv.height !== Math.round(h * r)) { cv.width = Math.round(w * r); cv.height = Math.round(h * r); }
+  var s = Math.min(w / Math.max(box[2] - box[0], 1), h / Math.max(box[3] - box[1], 1));
+  return { s: s, cx: (box[0] + box[2]) / 2, cy: (box[1] + box[3]) / 2, w: w, h: h, r: r };
+}
+
+function toPx(v, x, y) {
+  var px = (x - v.cx) * v.s, py = (y - v.cy) * v.s;
+  if(S.xl) px = -px;
+  if(!S.yd) py = -py;
+  return [v.w / 2 + px, v.h / 2 + py];
+}
+
+function makePvImg() {
+  pvImg = null;
+  if(!pv || !pv.v || !pv.w) return;
+  var c = document.createElement('canvas'), g, img, d, bytes = pv.w / 8;
+  c.width = pv.w; c.height = pv.h;
+  g = c.getContext('2d');
+  img = g.createImageData(pv.w, pv.h); d = img.data;
+  for(var y = 0; y < pv.h; y++) {
+    var row = pv.rows[y] || '';
+    for(var i = 0; i < bytes; i++) {
+      var v = parseInt(row.substr(i * 2, 2), 16) || 0;
+      for(var b = 0; b < 8; b++) {
+        var k = (y * pv.w + i * 8 + b) * 4;
+        if(v & (0x80 >> b)) { d[k] = 0x8c; d[k + 1] = 0x7a; d[k + 2] = 0x64; d[k + 3] = 255; }
+      }
+    }
+  }
+  g.putImageData(img, 0, 0);
+  pvImg = c;
+}
+
+function render(cv, box, fine) {
+  var v = fit(cv, box), g = cv.getContext('2d'), e = extent(), p, q, i;
+  g.setTransform(v.r, 0, 0, v.r, 0, 0);
+  g.fillStyle = '#0c0e20'; g.fillRect(0, 0, v.w, v.h);
+
+  // machine area, grid, frame
+  p = toPx(v, e[0], e[1]); q = toPx(v, e[2], e[3]);
+  var ax = Math.min(p[0], q[0]), ay = Math.min(p[1], q[1]), aw = Math.abs(q[0] - p[0]), ah = Math.abs(q[1] - p[1]);
+  g.fillStyle = '#0e1024'; g.fillRect(ax, ay, aw, ah);
+  var grid = fine ? 10 : 50;
+  g.lineWidth = 1;
+  for(var gx = e[0] + grid; gx < e[2]; gx += grid) {
+    g.strokeStyle = fine && Math.abs((gx - e[0]) % 50) < 0.01 ? '#2c2e5a' : '#1e2042';
+    p = toPx(v, gx, e[1]); q = toPx(v, gx, e[3]);
+    g.beginPath(); g.moveTo(Math.round(p[0]) + 0.5, p[1]); g.lineTo(Math.round(q[0]) + 0.5, q[1]); g.stroke();
+  }
+  for(var gy = e[1] + grid; gy < e[3]; gy += grid) {
+    g.strokeStyle = fine && Math.abs((gy - e[1]) % 50) < 0.01 ? '#2c2e5a' : '#1e2042';
+    p = toPx(v, e[0], gy); q = toPx(v, e[2], gy);
+    g.beginPath(); g.moveTo(p[0], Math.round(p[1]) + 0.5); g.lineTo(q[0], Math.round(q[1]) + 0.5); g.stroke();
+  }
+  g.strokeStyle = '#7a7ad8'; g.lineWidth = 2; g.strokeRect(ax + 1, ay + 1, aw - 2, ah - 2);
+
+  // G-code preview: work area and the moves still to burn/cut
+  if(pv && pv.v && pvImg) {
+    var b = pvBox(0), dx = Math.max(pv.x1 - pv.x0, 0.1), dy = Math.max(pv.y1 - pv.y0, 0.1);
+    var ps = Math.min(239 / dx, 159 / dy);      // bitmap scale as on the controller
+    p = toPx(v, b[0], b[1]); q = toPx(v, b[2], b[3]);
+    g.fillStyle = '#3a2e22';
+    g.fillRect(Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1]));
+    var o = toPx(v, b[0], b[3]), k = v.s / ps;      // bitmap pixel (0,0) is the top left (x0, y1)
+    g.save();
+    g.imageSmoothingEnabled = false;
+    g.translate(o[0], o[1]);
+    g.scale(S.xl ? -k : k, S.yd ? -k : k);
+    g.drawImage(pvImg, 0, 0);
+    g.restore();
+  }
+
+  // trace of the tool while the laser/spindle was on
+  g.strokeStyle = '#00dcff'; g.lineCap = 'round';
+  g.lineWidth = Math.max(2, 0.6 * v.s);
+  g.beginPath();
+  for(i = 0; i < trace.length; i++) {
+    p = toPx(v, trace[i][0], trace[i][1]); q = toPx(v, trace[i][2], trace[i][3]);
+    g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]);
+  }
+  g.stroke();
+
+  // G54 origin: X arm red, Y arm green, both pointing to +
+  var ox = S.m[0] - S.w[0], oy = S.m[1] - S.w[1], arm = fine ? 26 : 16;
+  p = toPx(v, ox, oy);
+  g.lineWidth = 3;
+  g.strokeStyle = '#ff5252'; g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(p[0] + (S.xl ? -arm : arm), p[1]); g.stroke();
+  g.strokeStyle = '#3cdc78'; g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(p[0], p[1] + (S.yd ? arm : -arm)); g.stroke();
+
+  // tool
+  p = toPx(v, S.m[0], S.m[1]);
+  g.strokeStyle = '#fff'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(p[0] - 10, p[1]); g.lineTo(p[0] + 10, p[1]); g.moveTo(p[0], p[1] - 10); g.lineTo(p[0], p[1] + 10); g.stroke();
+  g.fillStyle = '#00dcff'; g.beginPath(); g.arc(p[0], p[1], 4, 0, 6.3); g.fill();
+}
+
+function traceBox() {
+  if(!trace.length) return null;
+  var b = [1e9, 1e9, -1e9, -1e9];
+  trace.forEach(function (s) {
+    b[0] = Math.min(b[0], s[0], s[2]); b[1] = Math.min(b[1], s[1], s[3]);
+    b[2] = Math.max(b[2], s[0], s[2]); b[3] = Math.max(b[3], s[1], s[3]);
+  });
+  return [b[0] - 10, b[1] - 10, b[2] + 10, b[3] + 10];
+}
+
+function draw() {
+  if(!S) return;
+  if(zoomOn) {
+    var box = pv && pv.v ? pvBox(10) : traceBox() || [S.m[0] - 40, S.m[1] - 40, S.m[0] + 40, S.m[1] + 40];
+    render($('zoomMap'), box, true);
+  } else if(view === 'main')
+    render($('map'), showPreview && pv && pv.v ? pvBox(5) : extent(), showPreview && pv && pv.v);
+}
+
+function loadPreview() {
+  req('GET', '/api/preview', null, function (code, t) {
+    if(code !== 200) return;
+    pv = JSON.parse(t);
+    showPreview = !!pv.v;
+    makePvImg();
+    draw();
+  });
+}
+
+// ---------------------------------------------------------------- polling
+
+function onStatus(s) {
+  var first = !S, started = !(lastSt & ST_CYCLE) && !!(s.st & ST_CYCLE);
+  S = s;
+
+  // trace: a new job starts with an empty map
+  var on = !!(s.st & ST_CYCLE) && !!(s.fl & F_SPINDLE);
+  if(lastSt === 0 && (s.st & ST_CYCLE)) trace = [];
+  if(on && lastOn && lastPos && (lastPos[0] !== s.m[0] || lastPos[1] !== s.m[1]))
+    trace.push([lastPos[0], lastPos[1], s.m[0], s.m[1]]);
+  lastOn = on; lastPos = [s.m[0], s.m[1]]; lastSt = s.st;
+  if(s.st & ST_CYCLE) jobError = false;
+
+  // errors, refused commands and messages of the controller
+  if(first) seen = { es: s.es, rs: s.rs, ms: s.ms };
+  if(s.es !== seen.es) {
+    seen.es = s.es;
+    if(s.ej) { jobError = true; banner('Job stopped: error ' + s.ec + ' ' + (errText[s.ec] || '') + ' - press Reset', 'red', 0); }
+    else banner('Error ' + s.ec + ' ' + (errText[s.ec] || ''), 'red', 4000);
+  }
+  if(s.rs !== seen.rs) { seen.rs = s.rs; banner('Not accepted: ' + s.rf, 'orange', 4000); }
+  if(s.ms !== seen.ms) { seen.ms = s.ms; banner(s.msg, 'green', 4000); }
+
+  if(s.pv !== pvSeq) { pvSeq = s.pv; loadPreview(); }
+
+  // a job that starts brings the main screen back
+  if(started && view !== 'main') showView('main');
+
+  updateTop();
+  if(view === 'main' || zoomOn) updateMain();
+  if(view === 'jog') updateJog();
+  if(view === 'sd') updateSd();
+  draw();
+}
+
+var fails = 0;
+function poll() {
+  req('GET', '/api/status', null, function (code, t) {
+    if(code === 200) {
+      fails = 0;
+      try { onStatus(JSON.parse(t)); } catch(e) {}
+      setTimeout(poll, 200);
+    } else {
+      // a single lost answer is not shown, only a connection that stays away
+      if(++fails >= 2 || code === 403) {
+        if(S) { S.on = 0; updateTop(); }
+        txt($('pill'), code === 403 ? 'WEB OFF' : 'OFFLINE');
+      }
+      setTimeout(poll, fails >= 2 ? 1000 : 200);
+    }
+  });
+}
+
+window.addEventListener('resize', draw);
+poll();
+})();
+</script>
+</body>
+</html>

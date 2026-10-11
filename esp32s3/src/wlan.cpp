@@ -1,21 +1,43 @@
-// WiFi, firmware updates over the air (ArduinoOTA and upload page)
+// WiFi, firmware updates over the air (ArduinoOTA and upload page), web interface (web.cpp)
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #include <WebServer.h>
-#include <HTTPUpdateServer.h>
 #include <Update.h>
 #include <Preferences.h>
 #include "wlan.h"
 #include "pins.h"
 #include "link.h"
+#include "web.h"
 
 wifi_cfg_t wifi_cfg = {};
 
 static Preferences prefs;
-static WebServer server(80);
-static HTTPUpdateServer updater;
+// Browsers (Chrome on Android in particular) open spare connections that send nothing at first.
+// WebServer serves one connection at a time and waits up to 5 s for a request on such a socket,
+// the page's status requests time out meanwhile. A connection without a request is dropped early.
+#define HTTP_IDLE_DROP_MS 500
+
+class FastWebServer : public WebServer {
+public:
+    using WebServer::WebServer;
+
+    void handleClient (void) override
+    {
+        if(_currentStatus == HC_WAIT_READ && _currentClient && !_currentClient.available() &&
+            millis() - _statusChange > HTTP_IDLE_DROP_MS) {
+            _currentClient.stop();
+            _currentClient = NetworkClient();
+            _currentStatus = HC_NONE;
+        }
+        WebServer::handleClient();
+    }
+};
+
+static FastWebServer server(80);
+static bool updates_ok = false, upload_ok = false;
+static uint8_t web_mode = Web_View;
 static wifi_state_t state = Wifi_Off;
 static bool services = false;           // OTA, upload page and mDNS are running
 static char ip[16] = "";
@@ -88,6 +110,54 @@ static void sender_poll (void)
     }
 }
 
+// Upload page for a firmware update, only accepted with the OTA password and while updates are allowed
+static const char update_page[] =
+    "<!doctype html><html><head><meta name=viewport content='width=device-width'><title>Firmware update</title>"
+    "<style>body{font-family:sans-serif;background:#070418;color:#fff;padding:24px}input,button{font-size:18px;margin:8px 0}</style>"
+    "</head><body><h2>Firmware update</h2><p>Only while the machine is idle, in alarm or not connected.</p>"
+    "<form method=POST action=/update enctype=multipart/form-data><input type=file name=firmware accept=.bin><br>"
+    "<button>Update</button></form></body></html>";
+
+static bool update_auth (void)
+{
+    return *wifi_cfg.ota && server.authenticate("admin", wifi_cfg.ota);
+}
+
+static void update_setup (void)
+{
+    server.on("/update", HTTP_GET, []() {
+        if(!update_auth())
+            return server.requestAuthentication();
+        server.send(200, "text/html", update_page);
+    });
+
+    server.on("/update", HTTP_POST, []() {
+        bool ok = upload_ok && !Update.hasError();
+        server.sendHeader("Connection", "close");
+        server.send(ok ? 200 : 400, "text/plain", ok ? "Update done, restarting" :
+                    !update_auth() ? "Wrong password" : !updates_ok ? "Not now: the machine is busy" : "Update failed");
+        if(ok) {
+            delay(500);
+            ESP.restart();
+        }
+    }, []() {
+        HTTPUpload &up = server.upload();
+        if(up.status == UPLOAD_FILE_START)
+            upload_ok = update_auth() && updates_ok && Update.begin(UPDATE_SIZE_UNKNOWN);
+        else if(up.status == UPLOAD_FILE_WRITE) {
+            if(upload_ok && Update.write(up.buf, up.currentSize) != up.currentSize)
+                upload_ok = false;
+        } else if(up.status == UPLOAD_FILE_END) {
+            if(upload_ok)
+                upload_ok = Update.end(true);
+        } else if(up.status == UPLOAD_FILE_ABORTED) {
+            if(upload_ok)
+                Update.abort();
+            upload_ok = false;
+        }
+    });
+}
+
 static void services_start (void)
 {
     MDNS.begin(host);
@@ -102,15 +172,17 @@ static void services_start (void)
         ArduinoOTA.setMdnsEnabled(false);   // MDNS is started above
         ArduinoOTA.begin();
         MDNS.enableArduino(3232, true);
-
-        updater.setup(&server, "/update", "admin", wifi_cfg.ota);
-        server.on("/", []() {
-            server.sendHeader("Location", "/update");
-            server.send(302, "text/plain", "");
-        });
-        server.begin();
-        MDNS.addService("http", "tcp", 80);
     }
+
+    // web interface and upload page
+    static bool routes = false;
+    if(!routes) {
+        update_setup();
+        web_begin(server);
+        routes = true;
+    }
+    server.begin();
+    MDNS.addService("http", "tcp", 80);
 
     services = true;
 }
@@ -154,6 +226,7 @@ void wifi_begin (void (*progress)(unsigned pct))
     if(prefs.getBytesLength("cfg") == sizeof(wifi_cfg))
         prefs.getBytes("cfg", &wifi_cfg, sizeof(wifi_cfg));
     prefs.getString("host", host, sizeof(host));
+    web_mode = prefs.getUChar("web", Web_View);
     if(!*host)
         strcpy(host, WIFI_HOST_DEFAULT);
 
@@ -197,10 +270,13 @@ void wifi_poll (bool updates_allowed)
     else if(sender_on)
         sender_close();
 
-    // while a job runs update requests are not answered at all
-    if(state == Wifi_Connected && services && updates_allowed && *wifi_cfg.ota) {
-        ArduinoOTA.handle();
+    // the web interface always, firmware updates only while the machine is idle, in alarm or not connected
+    if(state == Wifi_Connected && services) {
+        updates_ok = updates_allowed;
+        if(updates_allowed && *wifi_cfg.ota)
+            ArduinoOTA.handle();
         server.handleClient();
+        web_poll();
     }
 }
 
@@ -270,6 +346,17 @@ void wifi_set_host (const char *name)
 
     strlcpy(host, n ? h : WIFI_HOST_DEFAULT, sizeof(host));
     prefs.putString("host", host);
+}
+
+uint8_t wifi_web_mode (void)
+{
+    return web_mode;
+}
+
+void wifi_set_web_mode (uint8_t mode)
+{
+    web_mode = mode <= Web_Control ? mode : Web_Off;
+    prefs.putUChar("web", web_mode);
 }
 
 bool wifi_sender (void)

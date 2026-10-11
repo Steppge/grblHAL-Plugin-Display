@@ -2,6 +2,9 @@
 
 #include <Arduino.h>
 
+#define MAP_Y_DOWN      1       // 1: +Y points to the operator (front), drawn downwards; 0: +Y upwards
+#define MAP_X_LEFT      1       // 1: +X points to the left (seen from the front), 0: +X to the right
+
 // What has been burned/cut: the tool path while the spindle/laser was on, in machine coordinates.
 
 struct map_view_t {

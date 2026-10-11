@@ -21,6 +21,7 @@ The plugin only uses grblHAL core APIs and is not tied to a driver or MCU.
 | [`display_link.c`](display_link.c) | grblHAL plugin (`DISPLAY_LINK_ENABLE`): status to the display, commands from it |
 | [`my_plugin.c.example`](my_plugin.c.example) | Starts the plugin from `my_plugin_init()` |
 | [`esp32s3/`](esp32s3/) | ESP32-S3 firmware (PlatformIO, Arduino, LovyanGFX, LVGL 9) |
+| [`esp32s3/web/`](esp32s3/web/) | Web interface (one HTML page, embedded into the firmware) |
 
 ## Screens
 
@@ -84,6 +85,19 @@ large raster jobs are better run from the SD card.
 
 The machine name (WiFi screen, field Name) is the mDNS name (`<name>.local`) and the DHCP host name. Without
 `.local` it works when the router resolves the names of its clients.
+
+### Web interface
+
+Any browser on the same network (phone, tablet, PC) can show and control the machine at `http://<name>.local`
+(or the IP address): status, position, the map with the G-code preview and the live trace, the main buttons
+(Home, Unlock, X0 Y0, Z0, Hold/Stop, Start, Feed and Power overrides), a fullscreen map with STOP, jogging and the
+SD card. Commands go through the same queue and follow the same rules as the buttons on the display (holding
+for Home, zero and Start, STOP first holds and switches the laser off, then aborts). The display and browsers
+work at the same time.
+
+The button Web on the WiFi screen switches between Off, View (default, anyone on the network can watch) and
+Control. To control, the browser asks once for the OTA password; the device remembers it until the password
+changes. The page is `esp32s3/web/index.html`, it is gzipped into the firmware at build time.
 
 Updates are only accepted while the machine is idle, in alarm or not connected, the display shows the progress.
 Without an OTA password no update is accepted. If an update fails the previous firmware keeps running.

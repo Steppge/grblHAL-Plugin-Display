@@ -5,8 +5,6 @@
 #include "theme.h"
 
 #define TRACE_RES       2       // trace cells per mm
-#define MAP_Y_DOWN      1       // 1: +Y points to the operator (front), drawn downwards; 0: +Y upwards
-#define MAP_X_LEFT      1       // 1: +X points to the left (seen from the front), 0: +X to the right
 #define ZOOM_MARGIN    10.0f    // mm around the burned area in the zoom view
 #define ZOOM_EMPTY     40.0f    // mm around the tool when nothing has been burned yet
 
