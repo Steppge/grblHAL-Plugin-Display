@@ -686,7 +686,10 @@ static void build_topbar (lv_obj_t *s)
     lbl_wcs = label(s, &lv_font_montserrat_16, COL_WCS, "G54");
     lv_obj_set_pos(lbl_wcs, 370, 12);
     lbl_wifi = label(s, &lv_font_montserrat_16, 0x50506E, LV_SYMBOL_WIFI);
-    lv_obj_set_pos(lbl_wifi, 420, 12);
+    lv_obj_set_pos(lbl_wifi, 416, 8);
+    lv_obj_set_style_pad_all(lbl_wifi, 4, 0);
+    lv_obj_set_style_radius(lbl_wifi, 8, 0);
+    lv_obj_set_style_bg_color(lbl_wifi, C(COL_RING1), 0);
     lbl_link = label(s, &lv_font_montserrat_16, COL_RED1, LV_SYMBOL_CLOSE);
     lv_obj_set_pos(lbl_link, 450, 12);
 }
@@ -1499,8 +1502,11 @@ static void update_topbar (void)
     snprintf(buf, sizeof(buf), "G%u", 54 + mc.wcs);
     set_text(lbl_wcs, buf);
     set_text(lbl_link, mc.online ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
-    // WiFi symbol: grey off, orange connecting, green connected, cyan with a sender connected over WiFi
-    lv_obj_set_style_text_color(lbl_wifi, C(wifi_sender() ? COL_RING1 : wifi_state() == Wifi_Connected ? COL_GREEN1 :
+    // WiFi symbol: grey off, orange connecting, green connected; with a sender connected over WiFi
+    // it is shown dark on a cyan badge, clearly different from a connection over USB
+    bool sender = wifi_sender();
+    lv_obj_set_style_bg_opa(lbl_wifi, sender ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_text_color(lbl_wifi, C(sender ? COL_BG2 : wifi_state() == Wifi_Connected ? COL_GREEN1 :
                                              wifi_state() == Wifi_Connecting ? COL_ORANGE1 : 0x50506E), 0);
     lv_obj_set_style_text_color(lbl_link, C(mc.online ? COL_GREEN1 : COL_RED1), 0);
 }

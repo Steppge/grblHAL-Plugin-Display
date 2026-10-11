@@ -76,7 +76,7 @@ Once flashed over USB, the ESP32-S3 can be updated over WiFi:
 The display passes a TCP connection on port 23 through to the second UART (921600 baud). While a sender is
 connected that UART is the active grblHAL stream, as with telnet on boards with networking; USB does not take
 commands then. In LightBurn: device type GRBL, connection Ethernet/TCP, address `<name>.local` (or the IP
-address), port 23. The WiFi symbol in the status bar turns cyan while a sender is connected.
+address), port 23. While a sender is connected the WiFi symbol in the status bar is shown on a cyan badge.
 
 If the connection is lost while a job runs, the plugin holds the job and switches the laser/spindle off once
 the machine stands; resume or abort on the display. Raster jobs with many short lines may stutter over WiFi,
