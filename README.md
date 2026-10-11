@@ -34,7 +34,7 @@ The plugin only uses grblHAL core APIs and is not tied to a driver or MCU.
 - **Zoom**: the map full screen with two buttons, back and STOP. First tap on STOP: feed hold, the laser/spindle
   is switched off once the machine stands; the button then becomes ABORT (reset).
 - **Menu**: Move (jog X/Y/Z, steps 0.01-10 mm), Probe Z (plate thickness, feed), Laser (test pulse power and
-  time), SD card (file list, Load), Settings (groups, list, edit with keypad), WiFi.
+  time), SD card (file list, Load), Settings (groups, list, edit with keypad, gamepad buttons), WiFi.
 - Errors of commands and SD jobs appear in a banner. After an SD job has stopped with an error grblHAL refuses
   jogs until a reset, the main screen then offers Reset.
 - Beeper: click on button presses, three beeps on an alarm or error, two when a job of at least 10 s has finished.
@@ -161,9 +161,11 @@ characters between the start character and `*`. The full description is in the h
 
 ```
 board -> display: $DS (status, 10/s), $DI (machine size), $DN (job name), $AK (command accepted),
-                  $FL/$FE (file list), $PB/$PR/$PE (preview), $SV/$SE (settings), $ER (error), $MS (message)
+                  $FL/$FE (file list), $PB/$PR/$PE (preview), $SV/$SE (settings), $ER (error), $MS (message),
+                  $GK (gamepad button pressed)
 display -> board: >RT (realtime command), >GC (command line), >FL, >LF (laser pulse), >PV (preview),
-                  >SL/>SR (settings), >HB (heartbeat), >TC (sender over WiFi connected)
+                  >SL/>SR (settings), >HB (heartbeat), >TC (sender over WiFi connected),
+                  >GL (gamepad learn mode)
 ```
 
 ## Status

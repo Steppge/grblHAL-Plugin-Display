@@ -81,6 +81,8 @@ struct machine_t {
     uint16_t err_seq;       // counts errors
     char refused[48];       // command line the controller did not accept
     uint16_t refused_seq;   // counts refused command lines
+    int8_t gp_key;          // gamepad button pressed in learn mode (setting value), -1 = no gamepad
+    uint16_t gp_key_seq;    // counts reported buttons
 };
 
 struct file_list_t {
@@ -106,6 +108,11 @@ struct preview_t {
 
 // grblHAL settings, see display_link.c (SV/SE)
 #define SETTINGS_MAX        220
+
+// gamepad plugin: $450 + function holds the button of the function, settings group "Gamepad"
+#define GP_SETTING_FIRST    450
+#define GP_FUNCTIONS          8
+#define GP_GROUP            "Gamepad"
 
 enum { Fmt_Bool = 0, Fmt_Bitfield, Fmt_XBitfield, Fmt_RadioButtons, Fmt_AxisMask, Fmt_Integer, Fmt_Decimal };
 

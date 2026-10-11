@@ -283,6 +283,9 @@ static void handle_line (char *line)
     else if(!strncmp(line, "SE,", 3)) {
         setlist.loading = false;
         setlist.seq++;
+    } else if(!strncmp(line, "GK,", 3)) {
+        mc.gp_key = (int8_t)atoi(line + 3);
+        mc.gp_key_seq++;
     } else if(!strncmp(line, "MS,", 3)) {
         strlcpy(mc.msg, line + 3, sizeof(mc.msg));
         mc.msg_seq++;

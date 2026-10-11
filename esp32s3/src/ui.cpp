@@ -40,10 +40,11 @@ enum action_t {
     A_LPwrDn, A_LPwrUp, A_LTimeDn, A_LTimeUp, A_Fire,
     A_SdRefresh, A_SdRun, A_SdPick,
     A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset,
-    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan
+    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan,
+    A_GpChange, A_GpCancel, A_GpDefaults
 };
 
-enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Wifi, S_Count };
+enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Gamepad, S_Wifi, S_Count };
 
 struct ui_btn_t {
     lv_obj_t *obj, *icon, *text, *bar;
@@ -122,6 +123,28 @@ struct zbar_t {
     int h;
 };
 static zbar_t zbar_main, zbar_zoom;
+
+// gamepad button assignment (gamepad plugin settings $450-$457)
+static const char *const gp_fn_name[GP_FUNCTIONS] = { "Feed hold / STOP", "Resume", "Homing", "X0 Y0", "Z0",
+                                                      "Unlock / Reset", "Jog step", "Jog enable" };
+static const char *const gp_fn_trigger[GP_FUNCTIONS] = { "Tap / hold", "Tap", "Hold", "Hold", "Hold", "Tap", "Tap", "Tap" };
+static const char *const gp_key_name[] = { "-", "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L3", "R3",
+                                           "PS", "Share", "Options" };
+static const uint8_t gp_default_key[GP_FUNCTIONS] = { 2, 1, 4, 3, 6, 9, 10, 11 };    // as gamepad_plugin.c
+static lv_obj_t *gp_key_lbl[GP_FUNCTIONS], *gp_change[GP_FUNCTIONS], *gp_learn_box, *gp_learn_lbl, *gp_learn_time, *gp_list;
+static ui_btn_t *b_gp_defaults;
+static int gp_learn_fn = -1;            // function waiting for its new button, -1 = none
+static uint32_t gp_learn_until = 0, gp_verify_at = 0;
+static uint16_t gp_key_seen = 0;
+
+// Taps on list rows and on buttons inside scrolling lists count only when the finger stayed in
+// place and the list did not move: small drags on the resistive touch stay below LVGL's scroll
+// limit and were taken as taps.
+#define TAP_SLOP            10      // px
+static struct { lv_point_t p; uint32_t t; bool ok; } tap;
+static uint32_t list_scrolled = 0;      // millis() of the last movement of a list
+
+static void wifi_mask (int i);
 
 static bool move_from_main = false;     // Move was opened from the position card, back returns to main
 static int pending_screen = -1;         // screen change requested from a list row event
@@ -210,6 +233,40 @@ static void show (lv_obj_t *o, bool on)
         lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
     else
         lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void tap_track (lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p;
+
+    if(indev == NULL)
+        return;
+    lv_indev_get_point(indev, &p);
+
+    if(lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        tap.p = p;
+        tap.t = millis();
+        tap.ok = millis() - list_scrolled > 150;    // a tap that stops a moving list selects nothing
+    } else if(abs(p.x - tap.p.x) > TAP_SLOP || abs(p.y - tap.p.y) > TAP_SLOP)
+        tap.ok = false;
+}
+
+// for objects in a scrolling list, the CLICKED handler asks tap_valid()
+static void tap_guard (lv_obj_t *o)
+{
+    lv_obj_add_event_cb(o, tap_track, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(o, tap_track, LV_EVENT_PRESSING, NULL);
+}
+
+static bool tap_valid (void)
+{
+    return tap.ok && (int32_t)(list_scrolled - tap.t) < 0;
+}
+
+static void list_track (lv_obj_t *list)
+{
+    lv_obj_add_event_cb(list, [](lv_event_t *e) { list_scrolled = millis(); }, LV_EVENT_SCROLL, NULL);
 }
 
 // ------------------------------------------------------------------------
@@ -509,11 +566,16 @@ static void screen_show (screen_t s)
         setlist_seen = setlist.seq - 1;     // rebuild the list
     if(s == S_SetEdit && set_cur >= 0)
         strlcpy(edit_buf, setlist.item[set_cur].value, sizeof(edit_buf));
+    if(gp_learn_fn >= 0 && s != S_Gamepad) {
+        link_send("GL,0");
+        gp_learn_fn = -1;
+        show(gp_learn_box, false);
+    }
 
     if(s == S_Wifi) {
         action_run(A_WifiScan, 0);
-        lv_textarea_set_text(wifi_ta[1], wifi_cfg.pass);
-        lv_textarea_set_text(wifi_ta[2], wifi_cfg.ota);
+        wifi_mask(1);
+        wifi_mask(2);
         lv_textarea_set_text(wifi_ta[3], wifi_host());
         show(wifi_kb, false);
         lv_obj_set_y(wifi_form, 0);
@@ -873,17 +935,74 @@ static void build_laser (lv_obj_t *s)
     laser_msg = msg_label(s, 224, 214, 248);
 }
 
+// Lists do not scroll by dragging (a drag on the resistive touch was taken as a tap on a row),
+// a scroll bar on the right moves them. Hidden while everything fits.
+#define LIST_BAR_W  40
+
 static lv_obj_t *scroll_list (lv_obj_t *s, int x, int y, int w, int h)
 {
-    lv_obj_t *l = glass(s, x, y, w, h, 16);
+    lv_obj_t *l = glass(s, x, y, w - LIST_BAR_W - 8, h, 16);
 
-    lv_obj_add_flag(l, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(l, LV_DIR_VER);
     lv_obj_set_flex_flow(l, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(l, 6, 0);
     lv_obj_set_style_pad_row(l, 6, 0);
+    lv_obj_set_scrollbar_mode(l, LV_SCROLLBAR_MODE_OFF);
+    list_track(l);
+
+    lv_obj_t *bar = lv_slider_create(s);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_pos(bar, x + w - LIST_BAR_W + 12, y + 22);
+    lv_obj_set_size(bar, 16, h - 44);
+    lv_obj_set_ext_click_area(bar, 14);
+    lv_obj_set_style_radius(bar, 8, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, C(COL_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, 10, LV_PART_KNOB);
+    lv_obj_set_style_bg_color(bar, C(COL_RING1), LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_pad_hor(bar, 10, LV_PART_KNOB);
+    lv_obj_set_style_pad_ver(bar, 18, LV_PART_KNOB);
+    lv_obj_set_style_shadow_color(bar, C(COL_RING1), LV_PART_KNOB);
+    lv_obj_set_style_shadow_width(bar, 10, LV_PART_KNOB);
+    lv_obj_set_style_shadow_opa(bar, 150, LV_PART_KNOB);
+    lv_slider_set_range(bar, 0, 1);
+
+    // the slider value counts from the bottom, the scroll position from the top
+    lv_obj_add_event_cb(bar, [](lv_event_t *e) {
+        lv_obj_t *b = (lv_obj_t *)lv_event_get_target(e), *list = (lv_obj_t *)lv_event_get_user_data(e);
+        lv_obj_scroll_to_y(list, lv_slider_get_max_value(b) - lv_slider_get_value(b), LV_ANIM_OFF);
+    }, LV_EVENT_VALUE_CHANGED, l);
+
+    lv_obj_set_user_data(l, bar);
+    show(bar, false);
 
     return l;
+}
+
+// scroll bar range and knob after the list content or position has changed
+static void list_bar_sync (lv_obj_t *list)
+{
+    lv_obj_t *bar = (lv_obj_t *)lv_obj_get_user_data(list);
+
+    lv_obj_update_layout(list);
+
+    int32_t y = lv_obj_get_scroll_y(list), bottom = lv_obj_get_scroll_bottom(list);
+
+    if(bottom < 0 && y > 0) {       // shorter content after a refill
+        lv_obj_scroll_to_y(list, max<int32_t>(0, y + bottom), LV_ANIM_OFF);
+        y = lv_obj_get_scroll_y(list);
+        bottom = lv_obj_get_scroll_bottom(list);
+    }
+
+    int32_t range = y + max<int32_t>(0, bottom);
+
+    show(bar, range > 0);
+    if(range <= 0 || lv_slider_is_dragged(bar))
+        return;
+    if(lv_slider_get_max_value(bar) != range)
+        lv_slider_set_range(bar, 0, range);
+    if(lv_slider_get_value(bar) != range - y)
+        lv_slider_set_value(bar, range - y, LV_ANIM_OFF);
 }
 
 static lv_obj_t *list_row (lv_obj_t *list, const char *left, const char *right, bool sel)
@@ -896,10 +1015,11 @@ static lv_obj_t *list_row (lv_obj_t *list, const char *left, const char *right, 
     lv_obj_set_style_bg_color(r, C(sel ? COL_FEED2 : COL_CARD), 0);
     lv_obj_set_style_bg_opa(r, sel ? LV_OPA_COVER : 120, 0);
     lv_obj_set_style_bg_opa(r, 220, LV_STATE_PRESSED);
+    tap_guard(r);
 
     lv_obj_t *l = label(r, &lv_font_montserrat_16, COL_TEXT, left);
     lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(l, right ? 300 : 420);
+    lv_obj_set_width(l, right ? 260 : 390);
     lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
 
     if(right) {
@@ -961,21 +1081,43 @@ static void build_settings (lv_obj_t *groups, lv_obj_t *list, lv_obj_t *edit)
     }
 }
 
+// indices into setlist.item, sorted alphabetically by group (cmp_group) or by name (cmp_name)
+static int list_idx[SETTINGS_MAX];
+
+static int cmp_group (const void *a, const void *b)
+{
+    return strcasecmp(setlist.item[*(const int *)a].group, setlist.item[*(const int *)b].group);
+}
+
+static int cmp_name (const void *a, const void *b)
+{
+    return strcasecmp(setlist.item[*(const int *)a].name, setlist.item[*(const int *)b].name);
+}
+
 static void groups_fill (void)
 {
+    int n = 0;
+
     lv_obj_clean(grp_list);
+    lv_obj_scroll_to_y(grp_list, 0, LV_ANIM_OFF);
 
     for(int i = 0; i < setlist.count; i++) {
         int j = 0;
         while(j < i && strcmp(setlist.item[j].group, setlist.item[i].group))
             j++;
-        if(j < i)
-            continue;   // group already listed
+        if(j == i)
+            list_idx[n++] = i;      // first setting of a group
+    }
+    qsort(list_idx, n, sizeof(int), cmp_group);
 
+    for(int k = 0; k < n; k++) {
+        int i = list_idx[k];
         lv_obj_t *r = list_row(grp_list, setlist.item[i].group, NULL, false);
         lv_obj_add_event_cb(r, [](lv_event_t *e) {
+            if(!tap_valid())
+                return;
             strlcpy(set_group, setlist.item[(int)(intptr_t)lv_event_get_user_data(e)].group, sizeof(set_group));
-            pending_screen = S_SetList;
+            pending_screen = strcmp(set_group, GP_GROUP) ? S_SetList : S_Gamepad;
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
 
@@ -987,15 +1129,24 @@ static void settings_fill (void)
     char left[64];
 
     lv_obj_clean(set_list);
+    lv_obj_scroll_to_y(set_list, 0, LV_ANIM_OFF);
     set_text(set_title, set_group);
 
+    int n = 0;
     for(int i = 0; i < setlist.count; i++) {
+        if(!strcmp(setlist.item[i].group, set_group))
+            list_idx[n++] = i;
+    }
+    qsort(list_idx, n, sizeof(int), cmp_name);
+
+    for(int k = 0; k < n; k++) {
+        int i = list_idx[k];
         const setting_t *st = &setlist.item[i];
-        if(strcmp(st->group, set_group))
-            continue;
         snprintf(left, sizeof(left), "$%u  %s", st->id, st->name);
         lv_obj_t *r = list_row(set_list, left, st->value, false);
         lv_obj_add_event_cb(r, [](lv_event_t *e) {
+            if(!tap_valid())
+                return;
             set_cur = (int)(intptr_t)lv_event_get_user_data(e);
             pending_screen = S_SetEdit;
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -1065,6 +1216,31 @@ static void update_edit (void)
     }
 }
 
+// Stored passwords are shown masked. Tapping such a field empties it for a new password, which is
+// visible while typed. Left empty, the stored password stays.
+static bool wifi_hidden[3], wifi_cleared[3];
+
+static char *wifi_stored (int i)
+{
+    return i == 1 ? wifi_cfg.pass : wifi_cfg.ota;
+}
+
+static void wifi_mask (int i)
+{
+    lv_textarea_set_text(wifi_ta[i], wifi_stored(i));
+    wifi_hidden[i] = *wifi_stored(i) != '\0';
+    wifi_cleared[i] = false;
+    lv_textarea_set_password_mode(wifi_ta[i], wifi_hidden[i]);
+}
+
+// the typed password, or the stored one when the field was emptied and left empty
+static const char *wifi_entry (int i)
+{
+    const char *t = lv_textarea_get_text(wifi_ta[i]);
+
+    return wifi_cleared[i] && !*t ? wifi_stored(i) : t;
+}
+
 static void build_wifi (lv_obj_t *scr)
 {
     static const char *names[4] = { "Network", "Password", "OTA password", "Name" };
@@ -1085,6 +1261,10 @@ static void build_wifi (lv_obj_t *scr)
         if(code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
             show(wifi_kb, false);
             lv_obj_set_y(wifi_form, 0);
+            for(int i = 1; i <= 2; i++) {
+                if(wifi_cleared[i] && !*lv_textarea_get_text(wifi_ta[i]))
+                    wifi_mask(i);       // nothing typed: the stored password again
+            }
         }
     }, LV_EVENT_ALL, NULL);
 
@@ -1103,7 +1283,9 @@ static void build_wifi (lv_obj_t *scr)
             continue;   // network: dropdown above
         lv_obj_t *ta = wifi_ta[i] = lv_textarea_create(s);
         lv_textarea_set_one_line(ta, true);
-        lv_textarea_set_password_mode(ta, false);   // visible while typing
+        lv_textarea_set_password_mode(ta, false);   // visible while typing, stored ones masked
+        lv_textarea_set_password_bullet(ta, "*");
+        lv_textarea_set_password_show_time(ta, 0);
         lv_textarea_set_max_length(ta, i == 1 ? 64 : 32);
         if(i == 3)
             lv_textarea_set_accepted_chars(ta, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-");
@@ -1112,14 +1294,193 @@ static void build_wifi (lv_obj_t *scr)
         lv_obj_set_pos(ta, 146, 92 + i * 48);
         lv_obj_add_event_cb(ta, [](lv_event_t *e) {
             lv_obj_t *t = (lv_obj_t *)lv_event_get_target(e);
+            int i = (int)(intptr_t)lv_event_get_user_data(e);
+            if(i <= 2 && wifi_hidden[i]) {
+                lv_textarea_set_text(t, "");
+                lv_textarea_set_password_mode(t, false);
+                wifi_hidden[i] = false;
+                wifi_cleared[i] = true;
+            }
             lv_keyboard_set_textarea(wifi_kb, t);
             show(wifi_kb, true);
             lv_obj_move_foreground(wifi_kb);
             lv_obj_set_y(wifi_form, 96 - lv_obj_get_y(t));     // the field just above the keyboard
-        }, LV_EVENT_FOCUSED, NULL);
+        }, LV_EVENT_FOCUSED, (void *)(intptr_t)i);
     }
 
     btn(s, 360, 236, 112, 76, 16, LV_SYMBOL_SAVE, "Save", COL_GREEN1, COL_GREEN2, A_WifiSave);
+}
+
+// Gamepad button assignment: function, how it is triggered, its button and Change. Change waits
+// for the next button pressed on the controller (learn mode of the gamepad plugin).
+static void build_gamepad (lv_obj_t *s)
+{
+    static const char *head[3] = { "Function", "Trigger", "Button" };
+    static const int head_x[3] = { 22, 164, 242 };
+
+    b_gp_defaults = btn(s, 336, 44, 136, 38, 12, NULL, "Defaults (hold)", 0, 0, A_None, A_GpDefaults);
+
+    for(int i = 0; i < 3; i++) {
+        lv_obj_t *l = label(s, &lv_font_montserrat_14, COL_MUTED, head[i]);
+        lv_obj_set_pos(l, head_x[i], 88);
+    }
+
+    lv_obj_t *list = gp_list = scroll_list(s, 8, 108, 464, 204);
+
+    for(int f = 0; f < GP_FUNCTIONS; f++) {
+        lv_obj_t *r = lv_obj_create(list);
+        lv_obj_remove_style_all(r);
+        lv_obj_set_size(r, LV_PCT(100), 44);
+        lv_obj_set_style_radius(r, 10, 0);
+        lv_obj_set_style_bg_color(r, C(COL_CARD), 0);
+        lv_obj_set_style_bg_opa(r, 120, 0);
+        lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(r, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_t *l = label(r, &lv_font_montserrat_16, f == 0 ? COL_RED1 : COL_TEXT, gp_fn_name[f]);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(l, 140);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 8, 0);
+        l = label(r, &lv_font_montserrat_14, COL_MUTED, gp_fn_trigger[f]);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 150, 0);
+        gp_key_lbl[f] = label(r, &lv_font_montserrat_16, COL_PWR, "");
+        lv_obj_align(gp_key_lbl[f], LV_ALIGN_LEFT_MID, 228, 0);
+
+        lv_obj_t *b = gp_change[f] = lv_button_create(r);
+        lv_obj_remove_style_all(b);
+        lv_obj_set_size(b, 76, 34);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, -4, 0);
+        lv_obj_set_style_radius(b, 10, 0);
+        gradient(b, COL_FEED1, COL_FEED2, LV_GRAD_DIR_VER);
+        lv_obj_set_style_bg_color(b, C(COL_CARD), LV_STATE_DISABLED);
+        lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_NONE, LV_STATE_DISABLED);
+        lv_obj_set_style_text_color(b, C(COL_TEXT), 0);
+        lv_obj_set_style_text_color(b, C(COL_MUTED), LV_STATE_DISABLED);
+        lv_obj_set_style_border_color(b, C(0xFFFFFF), 0);
+        lv_obj_set_style_border_width(b, 2, LV_STATE_PRESSED);
+        l = label(b, &lv_font_montserrat_14, COL_TEXT, "Change");
+        lv_obj_set_style_text_color(l, C(COL_MUTED), LV_STATE_DISABLED);
+        lv_obj_center(l);
+        tap_guard(b);
+        lv_obj_add_event_cb(b, [](lv_event_t *e) {
+            if(tap_valid()) {
+                beep_click();
+                action_run(A_GpChange, (int)(intptr_t)lv_event_get_user_data(e));
+            }
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)f);
+    }
+
+    // waiting for the button
+    gp_learn_box = glass(s, 60, 80, 360, 200, 20);
+    lv_obj_set_style_bg_color(gp_learn_box, C(COL_BG2), 0);
+    lv_obj_set_style_bg_opa(gp_learn_box, 245, 0);
+    lv_obj_add_flag(gp_learn_box, LV_OBJ_FLAG_CLICKABLE);      // nothing below reacts meanwhile
+    gp_learn_lbl = label(gp_learn_box, &lv_font_montserrat_20, COL_TEXT, "");
+    lv_obj_set_style_text_align(gp_learn_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(gp_learn_lbl, 340);
+    lv_obj_align(gp_learn_lbl, LV_ALIGN_TOP_MID, 0, 22);
+    gp_learn_time = label(gp_learn_box, &lv_font_montserrat_16, COL_MUTED, "");
+    lv_obj_align(gp_learn_time, LV_ALIGN_TOP_MID, 0, 86);
+    btn(gp_learn_box, 120, 128, 120, 56, 14, LV_SYMBOL_CLOSE, "Cancel", 0, 0, A_GpCancel);
+    show(gp_learn_box, false);
+}
+
+// button of a function from the settings list, -1 = not loaded
+static int gp_key_of (int f)
+{
+    for(int i = 0; i < setlist.count; i++) {
+        if(setlist.item[i].id == GP_SETTING_FIRST + f)
+            return atoi(setlist.item[i].value);
+    }
+
+    return -1;
+}
+
+static const char *gp_key_text (int k)
+{
+    return k >= 0 && k < N_VAL(gp_key_name) ? gp_key_name[k] : "?";
+}
+
+// The new button for function f: the plugin clears the button's previous function, STOP keeps its button.
+static void gp_assign (int f, int k)
+{
+    char buf[96], cmd[16];
+    int other = -1;
+
+    if(k == gp_key_of(f)) {
+        snprintf(buf, sizeof(buf), "%s: already %s", gp_fn_name[f], gp_key_text(k));
+        banner_show(buf, COL_GREEN2, 2500);
+        return;
+    }
+    if(f != 0 && k == gp_key_of(0)) {
+        snprintf(buf, sizeof(buf), "%s is the STOP button - STOP keeps it, choose another", gp_key_text(k));
+        banner_show(buf, COL_RED2, 4000);
+        beep(3);
+        return;
+    }
+
+    for(int i = 0; i < GP_FUNCTIONS; i++) {
+        if(i != f && gp_key_of(i) == k)
+            other = i;
+    }
+
+    snprintf(cmd, sizeof(cmd), "$%d=%d", GP_SETTING_FIRST + f, k);
+    link_cmd(cmd);
+    gp_verify_at = millis() + 400;
+
+    if(other >= 0)
+        snprintf(buf, sizeof(buf), "%s: %s - %s has no button now", gp_fn_name[f], gp_key_text(k), gp_fn_name[other]);
+    else
+        snprintf(buf, sizeof(buf), "%s: %s", gp_fn_name[f], gp_key_text(k));
+    banner_show(buf, other >= 0 ? COL_ORANGE2 : COL_GREEN2, other >= 0 ? 4000 : 2500);
+}
+
+static void update_gamepad (void)
+{
+    char buf[64];
+    bool may = mc.online && (mc.state == STATE_IDLE || (mc.state & STATE_ALARM));
+
+    list_bar_sync(gp_list);
+    btn_enable(b_gp_defaults, may && gp_learn_fn < 0 && link_idle());
+
+    for(int f = 0; f < GP_FUNCTIONS; f++) {
+        set_text(gp_key_lbl[f], gp_key_text(gp_key_of(f)));
+        if(may == lv_obj_has_state(gp_change[f], LV_STATE_DISABLED)) {
+            if(may)
+                lv_obj_remove_state(gp_change[f], LV_STATE_DISABLED);
+            else
+                lv_obj_add_state(gp_change[f], LV_STATE_DISABLED);
+        }
+    }
+
+    // after a change: read all assignments again, another function may have lost its button
+    if(gp_verify_at && millis() >= gp_verify_at && link_idle()) {
+        gp_verify_at = 0;
+        for(int f = 0; f < GP_FUNCTIONS; f++)
+            link_setting(GP_SETTING_FIRST + f);
+    }
+
+    if(gp_learn_fn < 0)
+        return;
+
+    if(mc.gp_key_seq != gp_key_seen) {
+        int f = gp_learn_fn;
+        gp_key_seen = mc.gp_key_seq;
+        gp_learn_fn = -1;
+        show(gp_learn_box, false);
+        if(mc.gp_key < 0)
+            banner_show("No gamepad", COL_ORANGE2, 3000);
+        else
+            gp_assign(f, mc.gp_key);
+    } else if(millis() >= gp_learn_until || !mc.online) {
+        link_send("GL,0");
+        gp_learn_fn = -1;
+        show(gp_learn_box, false);
+        banner_show("No button pressed", COL_ORANGE2, 3000);
+    } else {
+        snprintf(buf, sizeof(buf), "%lu s", (gp_learn_until - millis() + 999) / 1000);
+        set_text(gp_learn_time, buf);
+    }
 }
 
 // Full screen progress of a firmware update, drawn at once (the update blocks the main loop).
@@ -1150,12 +1511,7 @@ void ui_ota_progress (unsigned pct)
 
 static void build_sd (lv_obj_t *s)
 {
-    sd_list = glass(s, 8, 44, 340, 268, 16);
-    lv_obj_add_flag(sd_list, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(sd_list, LV_DIR_VER);
-    lv_obj_set_flex_flow(sd_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(sd_list, 6, 0);
-    lv_obj_set_style_pad_row(sd_list, 6, 0);
+    sd_list = scroll_list(s, 8, 44, 348, 268);
 
     btn(s, 360, 44, 112, 72, 16, LV_SYMBOL_REFRESH, "Refresh", 0, 0, A_SdRefresh);
     sd_msg = msg_label(s, 360, 128, 112);
@@ -1175,12 +1531,15 @@ static void sd_fill (void)
         bool sel = !strcmp(files.name[i], sd_sel);
         lv_obj_set_style_bg_color(r, C(sel ? COL_FEED2 : COL_CARD), 0);
         lv_obj_set_style_bg_opa(r, sel ? LV_OPA_COVER : 120, 0);
+        tap_guard(r);
         lv_obj_t *l = label(r, &lv_font_montserrat_16, COL_TEXT, files.name[i]);
         lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(l, 300);
+        lv_obj_set_width(l, 260);
         lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
         // the list is rebuilt in update_screen(), not while the row's own event runs
         lv_obj_add_event_cb(r, [](lv_event_t *e) {
+            if(!tap_valid())
+                return;
             strlcpy(sd_sel, files.name[(int)(intptr_t)lv_event_get_user_data(e)], sizeof(sd_sel));
             link_preview(sd_sel);
             sd_dirty = true;
@@ -1300,7 +1659,7 @@ static void action_run (int action, int arg)
         case A_Menu:        screen_show(S_Menu); break;
         case A_Back:
             screen_show(screen == S_Menu || (screen == S_Move && move_from_main) ? S_Main : screen == S_SetEdit ? S_SetList :
-                        screen == S_SetList ? S_SetGroups : S_Menu);
+                        screen == S_SetList || screen == S_Gamepad ? S_SetGroups : S_Menu);
             break;
         case A_ScrSettings: screen_show(S_SetGroups); break;
         case A_ScrWifi:     screen_show(S_Wifi); break;
@@ -1316,8 +1675,12 @@ static void action_run (int action, int arg)
         case A_WifiSave:
             if(!wifi_scanning && lv_dropdown_get_option_count(wifi_dd) && wifi_scan_result() > 0)
                 lv_dropdown_get_selected_str(wifi_dd, wifi_cfg.ssid, sizeof(wifi_cfg.ssid));
-            strlcpy(wifi_cfg.pass, lv_textarea_get_text(wifi_ta[1]), sizeof(wifi_cfg.pass));
-            strlcpy(wifi_cfg.ota, lv_textarea_get_text(wifi_ta[2]), sizeof(wifi_cfg.ota));
+            if(wifi_entry(1) != wifi_cfg.pass)
+                strlcpy(wifi_cfg.pass, wifi_entry(1), sizeof(wifi_cfg.pass));
+            if(wifi_entry(2) != wifi_cfg.ota)
+                strlcpy(wifi_cfg.ota, wifi_entry(2), sizeof(wifi_cfg.ota));
+            wifi_mask(1);
+            wifi_mask(2);
             wifi_set_host(lv_textarea_get_text(wifi_ta[3]));
             lv_textarea_set_text(wifi_ta[3], wifi_host());
             show(wifi_kb, false);
@@ -1325,6 +1688,34 @@ static void action_run (int action, int arg)
             wifi_apply();
             banner_show(*wifi_cfg.ota ? "WiFi settings saved" : "Saved - updates are off without OTA password",
                          COL_GREEN2, 2500);
+            break;
+        case A_GpChange:
+            if(mc.online && (mc.state == STATE_IDLE || (mc.state & STATE_ALARM)) && gp_learn_fn < 0) {
+                gp_learn_fn = arg;
+                gp_learn_until = millis() + 10000;
+                gp_key_seen = mc.gp_key_seq;
+                link_send("GL,1");
+                snprintf(cmd, sizeof(cmd), "%s\nPress a button on the controller", gp_fn_name[arg]);
+                set_text(gp_learn_lbl, cmd);
+                set_text(gp_learn_time, "10 s");
+                show(gp_learn_box, true);
+                lv_obj_move_foreground(gp_learn_box);
+            }
+            break;
+        case A_GpDefaults:     // STOP first, so no default meets STOP on its button
+            if(mc.online && (mc.state == STATE_IDLE || (mc.state & STATE_ALARM)) && link_idle()) {
+                for(int f = 0; f < GP_FUNCTIONS; f++) {
+                    snprintf(cmd, sizeof(cmd), "$%d=%u", GP_SETTING_FIRST + f, gp_default_key[f]);
+                    link_cmd(cmd);
+                }
+                gp_verify_at = millis() + 400;
+                banner_show("Gamepad defaults restored", COL_GREEN2, 2500);
+            }
+            break;
+        case A_GpCancel:
+            link_send("GL,0");
+            gp_learn_fn = -1;
+            show(gp_learn_box, false);
             break;
         case A_Key:         edit_key((char)arg); break;
         case A_KeyDel:      edit_key('<'); break;
@@ -1752,6 +2143,7 @@ static void update_screen (void)
                 setlist_seen = setlist.seq;
                 groups_fill();
             }
+            list_bar_sync(grp_list);
             break;
 
         case S_SetList:
@@ -1759,6 +2151,11 @@ static void update_screen (void)
                 setlist_seen = setlist.seq;
                 settings_fill();
             }
+            list_bar_sync(set_list);
+            break;
+
+        case S_Gamepad:
+            update_gamepad();
             break;
 
         case S_SetEdit:
@@ -1780,6 +2177,7 @@ static void update_screen (void)
                 sd_dirty = false;
                 sd_fill();
             }
+            list_bar_sync(sd_list);
             btn_enable(b_sd_run, idle && *sd_sel);
             break;
 
@@ -1887,6 +2285,7 @@ void ui_init (void)
     build_sd(scr_obj[S_Sd]);
     build_settings(scr_obj[S_SetGroups], scr_obj[S_SetList], scr_obj[S_SetEdit]);
     build_wifi(scr_obj[S_Wifi]);
+    build_gamepad(scr_obj[S_Gamepad]);
     build_topbar(root);
     build_banner(root);
 

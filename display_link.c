@@ -69,6 +69,9 @@
     >TC,<1|0>*<hh>          a sender (LightBurn) has connected to / disconnected from the display over WiFi:
                             the second UART (DISPLAY_LINK_SENDER_STREAM) becomes / stops being the active
                             stream. A job running when the connection is lost is held, the laser switched off.
+    >GL,<1|0>*<hh>          gamepad plugin: start/end its learn mode, the next button pressed on the controller
+                            is reported instead of acting on it. The display assigns it with $450-$457.
+    $GK,<button>*<hh>       the button pressed (setting value of the gamepad plugin), -1 = no gamepad
 
   Errors (status codes) of commands and SD jobs:
 
@@ -141,6 +144,18 @@
 
 static const io_stream_t *dl_stream = NULL;
 static on_execute_realtime_ptr on_execute_realtime;
+
+// Gamepad plugin (optional): learning a button for the button assignment on the display.
+// gamepad_plugin.c provides the real functions.
+__attribute__((weak)) bool gamepad_learn (bool on)
+{
+    return false;
+}
+
+__attribute__((weak)) int8_t gamepad_learned (void)
+{
+    return -1;
+}
 static on_report_options_ptr on_report_options;
 static uint32_t last_rx = 0, last_status = 0, last_info = 0;
 static uint16_t seq = 0;
@@ -822,6 +837,11 @@ static void handle_line (char *line)
 
     else if(!strncmp(line, "TC,", 3))
         sender_connect(line[3] == '1');
+
+    else if(!strncmp(line, "GL,", 3)) {
+        if(!gamepad_learn(line[3] == '1'))
+            send_line("GK,-1");
+    }
 }
 
 static void receive (void)
@@ -939,6 +959,13 @@ static void dl_realtime (sys_state_t state)
     pv_poll(state);
     settings_poll();
     sender_poll(state);
+
+    int8_t key;
+    if((key = gamepad_learned()) >= 0) {
+        char body[12];
+        snprintf(body, sizeof(body), "GK,%d", key);
+        send_line(body);
+    }
 
     if(now - last_status >= DL_PERIOD_MS) {
         last_status = now;
