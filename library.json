@@ -5,7 +5,9 @@
   "build": {
     "srcFilter": [
       "+<*.c>",
-      "-<esp32s3/>"
+      "-<esp32s3/>",
+      "-<esp32p4/>",
+      "-<esp32common/>"
     ]
   }
 }

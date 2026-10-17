@@ -20,6 +20,7 @@ struct wifi_cfg_t {
 extern wifi_cfg_t wifi_cfg;
 
 void wifi_begin (void (*progress)(unsigned pct));  // progress: update running, 0..100
+void wifi_board_init (void);                // board specific setup, weak, called by wifi_begin()
 void wifi_poll (bool updates_allowed);
 void wifi_apply (void);                     // store wifi_cfg and (re)start or stop WiFi
 wifi_state_t wifi_state (void);

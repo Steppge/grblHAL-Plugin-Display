@@ -1,0 +1,12 @@
+{
+  "name": "grblhal-display-common",
+  "version": "1.0.0",
+  "description": "Shared code of the grblHAL touch displays: link to the controller, WiFi with OTA and sender bridge, web interface, workpiece map",
+  "license": "GPL-3.0-or-later",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src"
+  }
+}

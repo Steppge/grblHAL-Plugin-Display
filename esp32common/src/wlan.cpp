@@ -253,17 +253,32 @@ static void services_stop (void)
     }
 }
 
+// The board setup (ESP32-P4: start of the WiFi co-processor) only runs once WiFi is used, so the display
+// works without WiFi even when the co-processor does not answer.
+static bool board_ready = false;
+
+static void board_init_once (void)
+{
+    if(!board_ready) {
+        board_ready = true;
+        wifi_board_init();
+    }
+}
+
 static void start (void)
 {
     services_stop();
-    WiFi.disconnect(true);
+    if(board_ready)
+        WiFi.disconnect(true);
 
     if(!wifi_cfg.enabled || !*wifi_cfg.ssid) {
-        WiFi.mode(WIFI_OFF);
+        if(board_ready)
+            WiFi.mode(WIFI_OFF);
         state = Wifi_Off;
         return;
     }
 
+    board_init_once();
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(host);
     WiFi.setSleep(false);       // short response times for the sender
@@ -272,8 +287,15 @@ static void start (void)
     state = Wifi_Connecting;
 }
 
+// Board specific WiFi setup before the first use, e.g. the SDIO pins of an ESP32-C6 co-processor
+// on the ESP32-P4. The ESP32-S3 has WiFi on chip and needs nothing.
+__attribute__((weak)) void wifi_board_init (void)
+{
+}
+
 void wifi_begin (void (*progress)(unsigned pct))
 {
+
     on_progress = progress;
 
     prefs.begin("wifi", false);
@@ -339,6 +361,7 @@ void wifi_scan_start (void)
     if(scanning)
         return;
 
+    board_init_once();
     if(WiFi.getMode() == WIFI_OFF)
         WiFi.mode(WIFI_STA);    // scanning needs the station mode, switched off again afterwards
 
