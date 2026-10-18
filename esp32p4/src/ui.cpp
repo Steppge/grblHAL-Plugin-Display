@@ -2337,7 +2337,7 @@ void ui_update (void)
 void ui_init (void)
 {
     prefs.begin("ui", false);
-    if(prefs.getBytesLength("cfg") == sizeof(cfg))
+    if(prefs.isKey("cfg") && prefs.getBytesLength("cfg") == sizeof(cfg))
         prefs.getBytes("cfg", &cfg, sizeof(cfg));
     cfg.step = min<uint8_t>(cfg.step, N_VAL(step_val) - 1);
     cfg.probe_feed = min<uint8_t>(cfg.probe_feed, N_VAL(probe_feed_val) - 1);

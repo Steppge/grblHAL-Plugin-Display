@@ -265,21 +265,26 @@ static void board_init_once (void)
     }
 }
 
+// The radio is only switched off when WiFi is turned off: switching it off and on again right away fails
+// with the co-processor of the ESP32-P4, its RPC link is not up again yet.
 static void start (void)
 {
     services_stop();
-    if(board_ready)
-        WiFi.disconnect(true);
 
     if(!wifi_cfg.enabled || !*wifi_cfg.ssid) {
-        if(board_ready)
+        if(board_ready) {
+            WiFi.disconnect(true);
             WiFi.mode(WIFI_OFF);
+        }
         state = Wifi_Off;
         return;
     }
 
     board_init_once();
-    WiFi.mode(WIFI_STA);
+    if(WiFi.getMode() == WIFI_STA)
+        WiFi.disconnect();
+    else
+        WiFi.mode(WIFI_STA);
     WiFi.setHostname(host);
     WiFi.setSleep(false);       // short response times for the sender
     WiFi.setAutoReconnect(true);
@@ -299,7 +304,7 @@ void wifi_begin (void (*progress)(unsigned pct))
     on_progress = progress;
 
     prefs.begin("wifi", false);
-    if(prefs.getBytesLength("cfg") == sizeof(wifi_cfg))
+    if(prefs.isKey("cfg") && prefs.getBytesLength("cfg") == sizeof(wifi_cfg))
         prefs.getBytes("cfg", &wifi_cfg, sizeof(wifi_cfg));
     prefs.getString("host", host, sizeof(host));
     web_mode = prefs.getUChar("web", Web_View);

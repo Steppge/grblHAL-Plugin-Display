@@ -1,6 +1,6 @@
 // grblHAL touch display: Elecrow CrowPanel Advanced 9" ESP32-P4 (1024x600, EK79007 + GT911).
-// Talks to the controller over a serial link (J10), shared code in ../esp32common: link, WiFi with OTA,
-// sender bridge (J2) and web interface.
+// Talks to the controller over a serial link (header J7), shared code in ../esp32common: link, WiFi with OTA,
+// sender bridge (second UART on J7) and web interface.
 
 #include <Arduino.h>
 #include <lvgl.h>
