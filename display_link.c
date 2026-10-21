@@ -23,6 +23,7 @@
          sender (LightBurn) over WiFi on a second UART.
   v1.0 - gamepad button learn mode (>GL, $GK), released together with the display firmware 1.0
          (web interface, firmware update in the browser).
+  v1.1 - pairing a gamepad controller from the display (>GP, $GS).
 
   An ESP32-S3 with an MKS TS35 (see esp32s3/) is connected to a serial port of the controller
   board (DISPLAY_LINK_STREAM; BTT Octopus Pro: USART2 = PD5 TX2 / PD6 RX2 header next to USB-C, stream instance 1).
@@ -74,6 +75,11 @@
     >GL,<1|0>*<hh>          gamepad plugin: start/end its learn mode, the next button pressed on the controller
                             is reported instead of acting on it. The display assigns it with $450-$457.
     $GK,<button>*<hh>       the button pressed (setting value of the gamepad plugin), -1 = no gamepad
+    >GP,<cmd>*<hh>          gamepad plugin: 1 open the pairing window of its ESP32 (60 s), 0 close it,
+                            2 clear its allow list (forget all controllers), answered with $GS
+    $GS,<flags>,<pair>*<hh> gamepad state, on changes and once a second: flags (hex) 1 = gamepad plugin,
+                            2 = ESP32 link, 4 = controller connected, 8 = pairing window open;
+                            pair: seconds left in the pairing window
 
   Errors (status codes) of commands and SD jobs:
 
@@ -112,7 +118,7 @@
 #include "sdcard/fs_stream.h"
 #endif
 
-#define DL_VERSION "1.0"
+#define DL_VERSION "1.1"
 
 #ifndef DISPLAY_LINK_STREAM
 #define DISPLAY_LINK_STREAM     1
@@ -157,6 +163,36 @@ __attribute__((weak)) bool gamepad_learn (bool on)
 __attribute__((weak)) int8_t gamepad_learned (void)
 {
     return -1;
+}
+
+// Pairing a controller and the gamepad state (flags as in gamepad_plugin.c, 0 = no gamepad plugin).
+__attribute__((weak)) bool gamepad_pair (uint8_t cmd)
+{
+    return false;
+}
+
+__attribute__((weak)) uint8_t gamepad_status (uint8_t *pair_left)
+{
+    *pair_left = 0;
+
+    return 0;
+}
+
+static void send_line (const char *body);
+
+// $GS on changes and once a second (force)
+static void gamepad_report (bool force)
+{
+    static uint8_t last_flags = 0xFF, last_left = 0xFF;
+    uint8_t left, flags = gamepad_status(&left);
+
+    if(force || flags != last_flags || left != last_left) {
+        char body[16];
+        last_flags = flags;
+        last_left = left;
+        snprintf(body, sizeof(body), "GS,%X,%u", flags, left);
+        send_line(body);
+    }
 }
 static on_report_options_ptr on_report_options;
 static uint32_t last_rx = 0, last_status = 0, last_info = 0;
@@ -844,6 +880,11 @@ static void handle_line (char *line)
         if(!gamepad_learn(line[3] == '1'))
             send_line("GK,-1");
     }
+
+    else if(!strncmp(line, "GP,", 3)) {
+        gamepad_pair((uint8_t)(line[3] - '0'));
+        gamepad_report(true);
+    }
 }
 
 static void receive (void)
@@ -977,7 +1018,9 @@ static void dl_realtime (sys_state_t state)
     if(now - last_info >= DL_INFO_MS) {
         last_info = now;
         send_info();
-    }
+        gamepad_report(true);
+    } else
+        gamepad_report(false);
 }
 
 static void dl_report_options (bool newopt)

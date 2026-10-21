@@ -83,6 +83,8 @@ struct machine_t {
     uint16_t refused_seq;   // counts refused command lines
     int8_t gp_key;          // gamepad button pressed in learn mode (setting value), -1 = no gamepad
     uint16_t gp_key_seq;    // counts reported buttons
+    uint8_t gp_flags;       // gamepad state GP_xxx (0 = unknown or no gamepad plugin)
+    uint8_t gp_pair;        // seconds left in the pairing window
 };
 
 struct file_list_t {
@@ -113,6 +115,12 @@ struct preview_t {
 #define GP_SETTING_FIRST    450
 #define GP_FUNCTIONS          8
 #define GP_GROUP            "Gamepad"
+
+// gamepad state from $GS (display_link.c v1.1)
+#define GP_PLUGIN           0x01    // gamepad plugin in the controller firmware
+#define GP_ESP32            0x02    // the ESP32 with the Bluetooth receiver answers
+#define GP_CONNECTED        0x04    // a controller is connected
+#define GP_PAIRING          0x08    // the pairing window is open
 
 enum { Fmt_Bool = 0, Fmt_Bitfield, Fmt_XBitfield, Fmt_RadioButtons, Fmt_AxisMask, Fmt_Integer, Fmt_Decimal };
 

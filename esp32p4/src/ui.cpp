@@ -53,7 +53,7 @@ enum action_t {
     A_SdRefresh, A_SdRun, A_SdPick,
     A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset,
     A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan, A_WebMode,
-    A_GpChange, A_GpCancel, A_GpDefaults
+    A_GpChange, A_GpCancel, A_GpDefaults, A_GpPair, A_GpForget
 };
 
 enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Gamepad, S_Wifi, S_Count };
@@ -147,7 +147,10 @@ static const char *const gp_key_name[] = { "-", "Cross", "Circle", "Square", "Tr
                                            "PS", "Share", "Options" };
 static const uint8_t gp_default_key[GP_FUNCTIONS] = { 2, 1, 4, 3, 6, 9, 10, 11 };    // as gamepad_plugin.c
 static lv_obj_t *gp_key_lbl[GP_FUNCTIONS], *gp_change[GP_FUNCTIONS], *gp_learn_box, *gp_learn_lbl, *gp_learn_time, *gp_list;
-static ui_btn_t *b_gp_defaults;
+static ui_btn_t *b_gp_defaults, *b_gp_pair, *b_gp_forget;
+static lv_obj_t *gp_state_lbl;
+static bool gp_pairing = false, gp_pair_seen = false;    // pairing window requested / reported open
+static uint32_t gp_pair_sent = 0;
 static int gp_learn_fn = -1;            // function waiting for its new button, -1 = none
 static uint32_t gp_learn_until = 0, gp_verify_at = 0;
 static uint16_t gp_key_seen = 0;
@@ -584,6 +587,12 @@ static void screen_show (screen_t s)
     if(gp_learn_fn >= 0 && s != S_Gamepad) {
         link_send("GL,0");
         gp_learn_fn = -1;
+        show(gp_learn_box, false);
+    }
+
+    if(gp_pairing && s != S_Gamepad) {
+        link_send("GP,0");
+        gp_pairing = false;
         show(gp_learn_box, false);
     }
 
@@ -1368,6 +1377,10 @@ static void build_gamepad (lv_obj_t *s)
     static const int head_x[3] = { 32, 314, 496 };
 
     b_gp_defaults = btn(s, 760, 70, 240, 58, 14, NULL, "Defaults (hold)", 0, 0, A_None, A_GpDefaults);
+    b_gp_pair = btn(s, 300, 70, 220, 58, 14, NULL, "Pair controller", 0, 0, A_GpPair);
+    b_gp_forget = btn(s, 530, 70, 220, 58, 14, NULL, "Forget all (hold)", 0, 0, A_None, A_GpForget);
+    gp_state_lbl = label(s, &lv_font_montserrat_20, COL_MUTED, "");
+    lv_obj_set_pos(gp_state_lbl, 24, 87);
 
     for(int i = 0; i < 3; i++) {
         lv_obj_t *l = label(s, &lv_font_montserrat_20, COL_MUTED, head[i]);
@@ -1484,13 +1497,73 @@ static void gp_assign (int f, int k)
     banner_show(buf, other >= 0 ? COL_ORANGE2 : COL_GREEN2, other >= 0 ? 4000 : 2500);
 }
 
+// Pairing a controller (gamepad plugin 1.2 with its ESP32 firmware, display link 1.1): the state of
+// the receiver and the pairing window, which uses the box of the learn mode.
+static void gp_pair_poll (void)
+{
+    static uint32_t shown_col = 0;
+    char buf[48];
+    uint8_t fl = mc.gp_flags;
+    bool esp = mc.online && (fl & GP_ESP32);
+    uint32_t col = COL_MUTED;
+
+    if(!mc.online)
+        *buf = '\0';
+    else if(!fl)
+        strcpy(buf, "No gamepad plugin");
+    else if(!(fl & GP_ESP32)) {
+        strcpy(buf, "Receiver not found");
+        col = COL_ORANGE2;
+    } else if(fl & GP_PAIRING) {
+        snprintf(buf, sizeof(buf), "Pairing open, %u s", mc.gp_pair);
+        col = COL_PWR;
+    } else if(fl & GP_CONNECTED) {
+        strcpy(buf, "Controller connected");
+        col = COL_GREEN2;
+    } else
+        strcpy(buf, "No controller");
+
+    set_text(gp_state_lbl, buf);
+    if(col != shown_col) {
+        shown_col = col;
+        lv_obj_set_style_text_color(gp_state_lbl, C(col), 0);
+    }
+
+    btn_enable(b_gp_pair, esp && !gp_pairing && gp_learn_fn < 0);
+    btn_enable(b_gp_forget, esp && !gp_pairing && gp_learn_fn < 0);
+
+    if(!gp_pairing)
+        return;
+
+    if(mc.online && (fl & GP_PAIRING)) {
+        gp_pair_seen = true;
+        snprintf(buf, sizeof(buf), "%u s", mc.gp_pair);
+        set_text(gp_learn_time, buf);
+    } else if(!mc.online) {
+        gp_pairing = false;
+        show(gp_learn_box, false);
+    } else if(gp_pair_seen) {
+        gp_pairing = false;
+        show(gp_learn_box, false);
+        if(fl & GP_CONNECTED)
+            banner_show("Controller connected", COL_GREEN2, 2500);
+        else
+            banner_show("No controller paired", COL_ORANGE2, 3000);
+    } else if(millis() - gp_pair_sent > 2500) {
+        gp_pairing = false;
+        show(gp_learn_box, false);
+        banner_show("Receiver does not answer - update its firmware", COL_ORANGE2, 4000);
+    }
+}
+
 static void update_gamepad (void)
 {
     char buf[64];
     bool may = mc.online && (mc.state == STATE_IDLE || (mc.state & STATE_ALARM));
 
     list_bar_sync(gp_list);
-    btn_enable(b_gp_defaults, may && gp_learn_fn < 0 && link_idle());
+    btn_enable(b_gp_defaults, may && gp_learn_fn < 0 && !gp_pairing && link_idle());
+    gp_pair_poll();
 
     for(int f = 0; f < GP_FUNCTIONS; f++) {
         set_text(gp_key_lbl[f], gp_key_text(gp_key_of(f)));
@@ -1757,7 +1830,7 @@ static void action_run (int action, int arg)
                          COL_GREEN2, 2500);
             break;
         case A_GpChange:
-            if(mc.online && (mc.state == STATE_IDLE || (mc.state & STATE_ALARM)) && gp_learn_fn < 0) {
+            if(mc.online && (mc.state == STATE_IDLE || (mc.state & STATE_ALARM)) && gp_learn_fn < 0 && !gp_pairing) {
                 gp_learn_fn = arg;
                 gp_learn_until = millis() + 10000;
                 gp_key_seen = mc.gp_key_seq;
@@ -1780,9 +1853,32 @@ static void action_run (int action, int arg)
             }
             break;
         case A_GpCancel:
-            link_send("GL,0");
-            gp_learn_fn = -1;
+            if(gp_pairing) {
+                link_send("GP,0");
+                gp_pairing = false;
+            } else {
+                link_send("GL,0");
+                gp_learn_fn = -1;
+            }
             show(gp_learn_box, false);
+            break;
+        case A_GpPair:
+            if(mc.online && (mc.gp_flags & GP_ESP32) && !gp_pairing && gp_learn_fn < 0) {
+                link_send("GP,1");
+                gp_pairing = true;
+                gp_pair_seen = false;
+                gp_pair_sent = millis();
+                set_text(gp_learn_lbl, "Pairing open\nPS4: hold Share + PS");
+                set_text(gp_learn_time, "60 s");
+                show(gp_learn_box, true);
+                lv_obj_move_foreground(gp_learn_box);
+            }
+            break;
+        case A_GpForget:
+            if(mc.online && (mc.gp_flags & GP_ESP32) && !gp_pairing && gp_learn_fn < 0) {
+                link_send("GP,2");
+                banner_show("All controllers forgotten - pair one again", COL_ORANGE2, 4000);
+            }
             break;
         case A_Key:         edit_key((char)arg); break;
         case A_KeyDel:      edit_key('<'); break;

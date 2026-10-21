@@ -286,6 +286,12 @@ static void handle_line (char *line)
     } else if(!strncmp(line, "GK,", 3)) {
         mc.gp_key = (int8_t)atoi(line + 3);
         mc.gp_key_seq++;
+    } else if(!strncmp(line, "GS,", 3)) {
+        unsigned flags, left;
+        if(sscanf(line + 3, "%x,%u", &flags, &left) == 2) {
+            mc.gp_flags = (uint8_t)flags;
+            mc.gp_pair = (uint8_t)left;
+        }
     } else if(!strncmp(line, "MS,", 3)) {
         strlcpy(mc.msg, line + 3, sizeof(mc.msg));
         mc.msg_seq++;
@@ -335,8 +341,10 @@ void link_poll (void)
 
     uint32_t now = millis();    // after reading, a status line just received is not older than now
 
-    if(mc.online && now - mc.updated > LINK_TIMEOUT_MS)
+    if(mc.online && now - mc.updated > LINK_TIMEOUT_MS) {
         mc.online = false;
+        mc.gp_flags = mc.gp_pair = 0;
+    }
 
     static uint32_t last_hb = 0;
     if(now - last_hb >= HEARTBEAT_MS) {
