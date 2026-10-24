@@ -155,7 +155,7 @@ static int pending_screen = -1;         // screen change requested from a list r
 // WiFi
 static lv_obj_t *lbl_wifi, *wifi_status, *wifi_dd, *wifi_ta[4], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
 static lv_obj_t *wifi_form;             // everything but the keyboard, moved up while typing
-static bool wifi_scanning = false;
+static bool wifi_scanning = false, wifi_picked = false;  // a network was picked in the list after a scan
 static ui_btn_t *b_wifi_toggle, *b_web;
 static ui_btn_t *b_sd_run;
 static char sd_sel[64] = "";
@@ -1283,6 +1283,7 @@ static void build_wifi (lv_obj_t *scr)
     lv_obj_set_size(wifi_dd, 206, 42);
     lv_obj_set_pos(wifi_dd, 146, 92);
     lv_dropdown_set_options(wifi_dd, "");
+    lv_obj_add_event_cb(wifi_dd, [](lv_event_t *e) { wifi_picked = true; }, LV_EVENT_VALUE_CHANGED, NULL);
     btn(s, 360, 92, 112, 42, 12, LV_SYMBOL_REFRESH, "Scan", 0, 0, A_WifiScan);
     b_web = btn(s, 360, 140, 112, 42, 12, NULL, "", 0, 0, A_WebMode);     // web interface off / view / control
 
@@ -1762,10 +1763,11 @@ static void action_run (int action, int arg)
         case A_WifiScan:
             wifi_scan_start();
             wifi_scanning = true;
+            wifi_picked = false;
             lv_dropdown_set_options(wifi_dd, "Searching...");
             break;
         case A_WifiSave:
-            if(!wifi_scanning && lv_dropdown_get_option_count(wifi_dd) && wifi_scan_result() > 0)
+            if(wifi_picked && !wifi_scanning && lv_dropdown_get_option_count(wifi_dd) && wifi_scan_result() > 0)
                 lv_dropdown_get_selected_str(wifi_dd, wifi_cfg.ssid, sizeof(wifi_cfg.ssid));
             if(wifi_entry(1) != wifi_cfg.pass)
                 strlcpy(wifi_cfg.pass, wifi_entry(1), sizeof(wifi_cfg.pass));
@@ -2224,25 +2226,39 @@ static void update_screen (void)
             break;
 
         case S_Wifi:
-            if(wifi_scanning && wifi_scan_result() >= 0) {
+            if(wifi_scanning && wifi_scan_result() != -1) {
                 int n = wifi_scan_result();
                 wifi_scanning = false;
-                if(n == 0)
+                if(n <= 0) {
                     lv_dropdown_set_options(wifi_dd, *wifi_cfg.ssid ? wifi_cfg.ssid : "No network found");
-                else {
+                    if(n == WIFI_SCAN_ERROR)
+                        banner_show("Scan failed - try again", COL_ORANGE2, 3000);
+                } else {
+                    // the stored network stays selected, also when it is out of reach: Save only
+                    // changes the network when another one is picked in the list
                     lv_dropdown_clear_options(wifi_dd);
-                    int sel = 0;
+                    int sel = -1;
                     for(int i = 0; i < n; i++) {
                         lv_dropdown_add_option(wifi_dd, wifi_scan_ssid(i), LV_DROPDOWN_POS_LAST);
                         if(!strcmp(wifi_scan_ssid(i), wifi_cfg.ssid))
                             sel = i;
                     }
-                    lv_dropdown_set_selected(wifi_dd, sel);
+                    if(sel < 0 && *wifi_cfg.ssid) {
+                        lv_dropdown_add_option(wifi_dd, wifi_cfg.ssid, 0);
+                        sel = 0;
+                    }
+                    lv_dropdown_set_selected(wifi_dd, sel < 0 ? 0 : sel);
                 }
             }
             switch(wifi_state()) {
                 case Wifi_Off:        set_text(wifi_status, *wifi_cfg.ssid ? "WiFi off" : "WiFi off - enter the network"); break;
-                case Wifi_Connecting: set_text(wifi_status, "Connecting..."); break;
+                case Wifi_Connecting:
+                    if(*wifi_fail_text())
+                        snprintf(buf, sizeof(buf), "Connecting... (%s)", wifi_fail_text());
+                    else
+                        strcpy(buf, "Connecting...");
+                    set_text(wifi_status, buf);
+                    break;
                 case Wifi_Connected:
                     snprintf(buf, sizeof(buf), "%s  %s.local%s", wifi_ip(), wifi_host(), wifi_sender() ? "  - sender" : "");
                     set_text(wifi_status, buf);

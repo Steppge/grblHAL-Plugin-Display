@@ -34,6 +34,9 @@ bool wifi_sender (void);                    // a sender (LightBurn) is connected
 uint8_t wifi_web_mode (void);               // web interface: 0 off, 1 view, 2 control (web.h)
 void wifi_set_web_mode (uint8_t mode);      // stored
 
-void wifi_scan_start (void);
-int wifi_scan_result (void);                // -1 while scanning, else the number of networks found
+#define WIFI_SCAN_ERROR -2
+
+void wifi_scan_start (void);                // pauses a connection attempt meanwhile
+int wifi_scan_result (void);                // -1 while scanning, WIFI_SCAN_ERROR, else the number of networks found
+const char *wifi_fail_text (void);          // why the connection attempt fails, "" = no reason known
 const char *wifi_scan_ssid (int i);         // sorted by signal strength, no duplicates

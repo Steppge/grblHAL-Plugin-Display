@@ -88,6 +88,8 @@ static FastWebServer server(80);
 static bool updates_ok = false, upload_ok = false;
 static uint8_t web_mode = Web_View;
 static wifi_state_t state = Wifi_Off;
+static bool scan_failed = false, scan_paused = false;  // a connection attempt waits for the scan
+static volatile uint8_t fail_reason = 0;    // last disconnect reason (esp_wifi), 0 = none
 static bool services = false;           // OTA, upload page and mDNS are running
 static char ip[16] = "";
 static void (*on_progress)(unsigned pct) = NULL;
@@ -290,6 +292,8 @@ static void start (void)
     WiFi.setAutoReconnect(true);
     WiFi.begin(wifi_cfg.ssid, wifi_cfg.pass);
     state = Wifi_Connecting;
+    fail_reason = 0;
+    scan_paused = false;
 }
 
 // Board specific WiFi setup before the first use, e.g. the SDIO pins of an ESP32-C6 co-processor
@@ -315,6 +319,12 @@ void wifi_begin (void (*progress)(unsigned pct))
     sender_uart.setTxBufferSize(4096);
     sender_uart.begin(SENDER_BAUD, SERIAL_8N1, PIN_SENDER_RX, PIN_SENDER_TX);
 
+    // why a connection attempt fails, 8 = we disconnected ourselves
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if(info.wifi_sta_disconnected.reason != 8)
+            fail_reason = info.wifi_sta_disconnected.reason;
+    }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
     // progress of both update paths, the display shows it
     Update.onProgress([](size_t done, size_t total) {
         if(on_progress && total)
@@ -335,9 +345,17 @@ void wifi_poll (bool updates_allowed)
     if(state == Wifi_Off)
         return;
 
+    static uint8_t reported = 0;
+    if(fail_reason != reported) {
+        reported = fail_reason;
+        if(reported && state != Wifi_Connected)
+            Serial.printf("WiFi: no connection to '%s': %s (%u)\n", wifi_cfg.ssid, wifi_fail_text(), reported);
+    }
+
     if(WiFi.status() == WL_CONNECTED) {
         if(state != Wifi_Connected) {
             state = Wifi_Connected;
+            fail_reason = 0;
             strlcpy(ip, WiFi.localIP().toString().c_str(), sizeof(ip));
             services_start();
         }
@@ -361,6 +379,18 @@ void wifi_poll (bool updates_allowed)
     }
 }
 
+// After a scan: WiFi off again, or the paused connection attempt goes on
+static void scan_done (void)
+{
+    if(state == Wifi_Off)
+        WiFi.mode(WIFI_OFF);
+    else if(scan_paused) {
+        scan_paused = false;
+        WiFi.setAutoReconnect(true);
+        WiFi.begin(wifi_cfg.ssid, wifi_cfg.pass);
+    }
+}
+
 void wifi_scan_start (void)
 {
     if(scanning)
@@ -370,21 +400,37 @@ void wifi_scan_start (void)
     if(WiFi.getMode() == WIFI_OFF)
         WiFi.mode(WIFI_STA);    // scanning needs the station mode, switched off again afterwards
 
+    // the WiFi chip refuses to scan while it tries to connect: the attempt waits for the scan
+    if(state == Wifi_Connecting && !scan_paused) {
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect();
+        scan_paused = true;
+        delay(100);
+    }
+
     WiFi.scanDelete();
     scanning = WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING;
+    if(!scanning) {
+        delay(200);
+        scanning = WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING;
+    }
+    scan_failed = !scanning;
     scan_n = 0;
+    if(scan_failed)
+        scan_done();
 }
 
 int wifi_scan_result (void)
 {
     if(!scanning)
-        return scan_n;
+        return scan_failed ? WIFI_SCAN_ERROR : scan_n;
 
     int n = WiFi.scanComplete();
     if(n == WIFI_SCAN_RUNNING)
         return -1;
 
     scanning = false;
+    scan_failed = n < 0;
     scan_n = 0;
 
     // the results come sorted by signal strength, the same network may show up more than once
@@ -397,11 +443,29 @@ int wifi_scan_result (void)
             strlcpy(scan_ssid[scan_n++], ssid.c_str(), sizeof(scan_ssid[0]));
     }
     WiFi.scanDelete();
+    scan_done();
 
-    if(state == Wifi_Off)
-        WiFi.mode(WIFI_OFF);
+    return scan_failed ? WIFI_SCAN_ERROR : scan_n;
+}
 
-    return scan_n;
+// why the connection attempt fails, in words
+const char *wifi_fail_text (void)
+{
+    static char buf[24];
+
+    switch(fail_reason) {
+        case 0:
+            return "";
+        case 201: case 210: case 211: case 212:     // no AP found (at all, with compatible security, ...)
+            return "network not found";
+        case 2: case 15: case 202: case 204: case 205:  // auth expired, handshake timeout, auth failed
+            return "wrong password?";
+        case 200:                                   // beacon timeout
+            return "signal lost";
+        default:
+            snprintf(buf, sizeof(buf), "error %u", fail_reason);
+            return buf;
+    }
 }
 
 const char *wifi_scan_ssid (int i)
