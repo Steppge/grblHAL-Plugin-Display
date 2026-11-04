@@ -121,6 +121,7 @@ struct preview_t {
 #define GP_ESP32            0x02    // the ESP32 with the Bluetooth receiver answers
 #define GP_CONNECTED        0x04    // a controller is connected
 #define GP_PAIRING          0x08    // the pairing window is open
+#define GP_ENABLED          0x10    // jog enable (Options) is on
 
 enum { Fmt_Bool = 0, Fmt_Bitfield, Fmt_XBitfield, Fmt_RadioButtons, Fmt_AxisMask, Fmt_Integer, Fmt_Decimal };
 
@@ -154,6 +155,7 @@ void link_setting (uint16_t id);        // request one setting again
 void link_preview (const char *name);   // request the preview of an SD file, "" clears it
 
 void link_begin (void);
+void link_use (Stream *s);          // transport of the link: a USB channel, NULL = the UART (default)
 void link_poll (void);
 void link_rt (uint8_t cmd);
 bool link_cmd (const char *line);   // queued, sent again until the controller has accepted it

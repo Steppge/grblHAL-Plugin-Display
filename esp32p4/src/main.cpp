@@ -1,6 +1,6 @@
 // grblHAL touch display: Elecrow CrowPanel Advanced 9" ESP32-P4 (1024x600, EK79007 + GT911).
-// Talks to the controller over a serial link (header J7), shared code in ../esp32common: link, WiFi with OTA,
-// sender bridge (second UART on J7) and web interface.
+// Talks to the controller over USB to the Octopus-Bridge (usb_link.cpp, the gamepad receiver passed through)
+// or a serial cable on header J7; shared code in ../esp32common: link, WiFi with OTA and web interface.
 
 #include <Arduino.h>
 #include <lvgl.h>
@@ -10,6 +10,7 @@
 #include "link.h"
 #include "wlan.h"
 #include "ui.h"
+#include "usb_link.h"
 
 #define UI_MS   100     // ui_update() interval
 
@@ -74,6 +75,7 @@ static void console (void)
         Serial.printf("WiFi %s, network '%s', password %s, OTA password %s, name %s.local, web %u, state %d, IP %s\n",
                       wifi_cfg.enabled ? "on" : "off", wifi_cfg.ssid, *wifi_cfg.pass ? "set" : "empty",
                       *wifi_cfg.ota ? "set" : "empty", wifi_host(), wifi_web_mode(), (int)wifi_state(), wifi_ip());
+        usb_link_report();
     }
 }
 
@@ -81,7 +83,8 @@ void setup (void)
 {
     Serial.begin(115200);
     delay(200);
-    Serial.printf("\ngrblHAL display P4, chip rev %d, %u MHz, PSRAM %u bytes\n", ESP.getChipRevision(), ESP.getCpuFreqMHz(), ESP.getPsramSize());
+    Serial.printf("\ngrblHAL display P4 %s, built %s %s, chip rev %d, %u MHz, PSRAM %u bytes\n", DISPLAY_VERSION, __DATE__, __TIME__,
+                  ESP.getChipRevision(), ESP.getCpuFreqMHz(), ESP.getPsramSize());
 
     lv_init();
     lv_tick_set_cb(tick);
@@ -95,6 +98,8 @@ void setup (void)
 
     beep_begin();
     link_begin();
+    usb_link_begin();
+    Serial.printf("link over %s\n", usb_link_selected() ? "USB" : "the cable on J7");
     wifi_begin(ota_progress);       // before the user interface: the WiFi chip link needs internal DMA memory
     if(disp)
         ui_init();
@@ -111,6 +116,14 @@ void loop (void)
 
     // firmware updates only while the machine is idle, in alarm or not connected
     wifi_poll(!mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP)));
+    wifi_time_poll();
+
+    // the machine network only without the USB cable (the bridge has its access point off meanwhile);
+    // at start the bridge gets 3 s to open the USB channel
+    static uint32_t usb_seen = 3000;
+    if(usb_link_mounted())
+        usb_seen = millis();
+    wifi_machine_allowed(millis() - usb_seen > 300);
 
     if(millis() - last_ui >= UI_MS) {
         last_ui = millis();

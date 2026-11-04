@@ -78,7 +78,7 @@
     >GP,<cmd>*<hh>          gamepad plugin: 1 open the pairing window of its ESP32 (60 s), 0 close it,
                             2 clear its allow list (forget all controllers), answered with $GS
     $GS,<flags>,<pair>*<hh> gamepad state, on changes and once a second: flags (hex) 1 = gamepad plugin,
-                            2 = ESP32 link, 4 = controller connected, 8 = pairing window open;
+                            2 = ESP32 link, 4 = controller connected, 8 = pairing window open, 10 = jog enable on;
                             pair: seconds left in the pairing window
 
   Errors (status codes) of commands and SD jobs:

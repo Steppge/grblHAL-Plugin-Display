@@ -1,5 +1,7 @@
 #pragma once
 
+#define DISPLAY_VERSION "1.2"       // shown with the build date in Settings > Display firmware
+
 void ui_init (void);
 void ui_update (void);  // call every 100 ms
 void ui_ota_progress (unsigned pct);

@@ -6,6 +6,7 @@
 #include <WebServer.h>
 #include <Update.h>
 #include <Preferences.h>
+#include <time.h>
 #include "wlan.h"
 #include "pins.h"
 #include "link.h"
@@ -97,12 +98,41 @@ static bool scanning = false;
 static int scan_n = 0;
 static char scan_ssid[WIFI_SCAN_MAX][33];
 static char host[33] = WIFI_HOST_DEFAULT;
+static char m_ssid[33] = "", m_pass[65] = "";      // machine network of the Octopus-Bridge, see wlan.h
+static bool home_mode = false;      // in the network of wifi_cfg although paired: firmware update
+static bool machine_ok = true;      // the display is not on the USB cable of the bridge
 
-// sender bridge: TCP connection <-> second UART to the controller
+// the machine network is used when paired, without the USB cable, and not for a firmware update
+static bool use_machine (void)
+{
+    return *m_ssid && machine_ok && !home_mode;
+}
+
+#define TIME_TZ         "CET-1CEST,M3.5.0,M10.5.0/3"   // Germany, summer time
+#define TIME_RESYNC_MS  (12UL * 3600 * 1000)
+
+static bool update_mode = false;
+static uint32_t time_next = 0;
+
+static const char *target_ssid (void)
+{
+    return use_machine() ? m_ssid : wifi_cfg.ssid;
+}
+
+static const char *target_pass (void)
+{
+    return use_machine() ? m_pass : wifi_cfg.pass;
+}
+
+static bool sender_on = false;
+
+// sender bridge: TCP connection <-> second UART to the controller, only on boards with sender pins
+// (ESP32-P4: the Octopus-Bridge at the controller takes the sender)
+#ifdef PIN_SENDER_TX
+
 static WiFiServer sender_server(SENDER_PORT);
 static WiFiClient sender_client;
 static HardwareSerial &sender_uart = Serial2;
-static bool sender_on = false;
 
 static void sender_close (void)
 {
@@ -161,6 +191,8 @@ static void sender_poll (void)
     }
 }
 
+#endif // PIN_SENDER_TX
+
 // Upload page for a firmware update, only accepted with the OTA password and while updates are allowed
 static const char update_page[] =
     "<!doctype html><html><head><meta name=viewport content='width=device-width'><title>Firmware update</title>"
@@ -218,9 +250,11 @@ static void services_start (void)
 {
     MDNS.begin(host);
 
+#ifdef PIN_SENDER_TX
     sender_server.begin();
     sender_server.setNoDelay(true);
     MDNS.addService("telnet", "tcp", SENDER_PORT);
+#endif
 
     if(*wifi_cfg.ota) {
         ArduinoOTA.setHostname(host);
@@ -246,8 +280,10 @@ static void services_start (void)
 static void services_stop (void)
 {
     if(services) {
+#ifdef PIN_SENDER_TX
         sender_close();
         sender_server.end();
+#endif
         ArduinoOTA.end();
         server.stop();
         MDNS.end();
@@ -273,10 +309,17 @@ static void start (void)
 {
     services_stop();
 
-    if(!wifi_cfg.enabled || !*wifi_cfg.ssid) {
+    // the machine network of a bridge is on without the USB cable, wifi_cfg.enabled only switches the
+    // home network; paired, the radio stays on (the co-processor of the ESP32-P4 does not like a quick
+    // off and on, the cable may be pulled any moment)
+    if(!use_machine() && (!wifi_cfg.enabled || !*wifi_cfg.ssid)) {
         if(board_ready) {
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
+            if(*m_ssid)
+                WiFi.disconnect();
+            else {
+                WiFi.disconnect(true);
+                WiFi.mode(WIFI_OFF);
+            }
         }
         state = Wifi_Off;
         return;
@@ -290,7 +333,7 @@ static void start (void)
     WiFi.setHostname(host);
     WiFi.setSleep(false);       // short response times for the sender
     WiFi.setAutoReconnect(true);
-    WiFi.begin(wifi_cfg.ssid, wifi_cfg.pass);
+    WiFi.begin(target_ssid(), target_pass());
     state = Wifi_Connecting;
     fail_reason = 0;
     scan_paused = false;
@@ -311,13 +354,20 @@ void wifi_begin (void (*progress)(unsigned pct))
     if(prefs.isKey("cfg") && prefs.getBytesLength("cfg") == sizeof(wifi_cfg))
         prefs.getBytes("cfg", &wifi_cfg, sizeof(wifi_cfg));
     prefs.getString("host", host, sizeof(host));
+    prefs.getString("mssid", m_ssid, sizeof(m_ssid));
+    prefs.getString("mpass", m_pass, sizeof(m_pass));
     web_mode = prefs.getUChar("web", Web_View);
     if(!*host)
         strcpy(host, WIFI_HOST_DEFAULT);
 
+    setenv("TZ", TIME_TZ, 1);       // local time also before the first sync
+    tzset();
+
+#ifdef PIN_SENDER_TX
     sender_uart.setRxBufferSize(4096);
     sender_uart.setTxBufferSize(4096);
     sender_uart.begin(SENDER_BAUD, SERIAL_8N1, PIN_SENDER_RX, PIN_SENDER_TX);
+#endif
 
     // why a connection attempt fails, 8 = we disconnected ourselves
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
@@ -337,7 +387,8 @@ void wifi_begin (void (*progress)(unsigned pct))
 void wifi_apply (void)
 {
     prefs.putBytes("cfg", &wifi_cfg, sizeof(wifi_cfg));
-    start();
+    if(!use_machine())
+        start();        // in the machine network the home settings wait, the link is not interrupted
 }
 
 void wifi_poll (bool updates_allowed)
@@ -349,7 +400,7 @@ void wifi_poll (bool updates_allowed)
     if(fail_reason != reported) {
         reported = fail_reason;
         if(reported && state != Wifi_Connected)
-            Serial.printf("WiFi: no connection to '%s': %s (%u)\n", wifi_cfg.ssid, wifi_fail_text(), reported);
+            Serial.printf("WiFi: no connection to '%s': %s (%u)\n", target_ssid(), wifi_fail_text(), reported);
     }
 
     if(WiFi.status() == WL_CONNECTED) {
@@ -364,10 +415,12 @@ void wifi_poll (bool updates_allowed)
         services_stop();
     }
 
+#ifdef PIN_SENDER_TX
     if(state == Wifi_Connected && services)
         sender_poll();
     else if(sender_on)
         sender_close();
+#endif
 
     // the web interface always, firmware updates only while the machine is idle, in alarm or not connected
     if(state == Wifi_Connected && services) {
@@ -387,7 +440,7 @@ static void scan_done (void)
     else if(scan_paused) {
         scan_paused = false;
         WiFi.setAutoReconnect(true);
-        WiFi.begin(wifi_cfg.ssid, wifi_cfg.pass);
+        WiFi.begin(target_ssid(), target_pass());
     }
 }
 
@@ -510,6 +563,81 @@ bool wifi_sender (void)
     return sender_on;
 }
 
+// Sent by the bridge on every plug-in: only a change is stored and reconnects.
+void wifi_set_machine (const char *ssid, const char *pass)
+{
+    if(!*ssid || (!strcmp(ssid, m_ssid) && !strcmp(pass, m_pass)))
+        return;
+
+    strlcpy(m_ssid, ssid, sizeof(m_ssid));
+    strlcpy(m_pass, pass, sizeof(m_pass));
+    prefs.putString("mssid", m_ssid);
+    prefs.putString("mpass", m_pass);
+    Serial.println("WiFi: paired with the machine network of the bridge");
+
+    start();
+}
+
+const char *wifi_machine_ssid (void)
+{
+    return m_ssid;
+}
+
+bool wifi_machine (void)
+{
+    return use_machine() && state == Wifi_Connected;
+}
+
+static void to_home (bool on)
+{
+    home_mode = on;
+    start();
+}
+
+// The display link has priority: the time is only fetched while the home network is the normal one (not
+// paired with a bridge, or on its USB cable), the clock runs on by itself in between.
+void wifi_time_poll (void)
+{
+    uint32_t now = millis();
+
+    if(!use_machine() && !update_mode && state == Wifi_Connected && (int32_t)(now - time_next) >= 0) {
+        configTzTime(TIME_TZ, "pool.ntp.org", "time.google.com");
+        time_next = now + TIME_RESYNC_MS;
+    }
+}
+
+void wifi_machine_allowed (bool on)
+{
+    if(on != machine_ok) {
+        machine_ok = on;
+        home_mode = update_mode;
+        start();
+    }
+}
+
+bool wifi_time_valid (void)
+{
+    return time(NULL) > 1700000000;     // after 2023: set
+}
+
+void wifi_update_mode (bool on)
+{
+    if(on == update_mode)
+        return;
+
+    update_mode = on;
+    if(on && !wifi_cfg.enabled) {
+        wifi_cfg.enabled = true;
+        prefs.putBytes("cfg", &wifi_cfg, sizeof(wifi_cfg));
+    }
+    to_home(on);
+}
+
+bool wifi_update_mode_on (void)
+{
+    return update_mode;
+}
+
 wifi_state_t wifi_state (void)
 {
     return state;
@@ -518,4 +646,9 @@ wifi_state_t wifi_state (void)
 const char *wifi_ip (void)
 {
     return state == Wifi_Connected ? ip : "";
+}
+
+wifi_state_t wifi_home_state (void)
+{
+    return use_machine() ? Wifi_Off : state;
 }

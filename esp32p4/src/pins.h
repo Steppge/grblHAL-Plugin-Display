@@ -18,19 +18,22 @@
 #define PIN_I2S_DOUT    23
 #define PIN_AMP_EN      30
 
-// Link to the controller and the second UART for a sender over WiFi, both on the 24-pin header J7
-// (3.3 V, direct GPIOs; J10 "UART3-IN" and J2 "UART1" are not used):
+// Link to the controller: over USB-C "USB 2.0" (J16) to the Octopus-Bridge (ESP32-S3 at the controller),
+// two CDC channels: 0 = display link, 1 = gamepad (passed through to the D1 Mini below), see usb_link.cpp.
+// As a last resort the link runs over a cable on the 24-pin header J7 (3.3 V, direct GPIOs), display only:
 //   J7 pin 20 GPIO50 TX -> Octopus PD6 (USART2 RX)     J7 pin 18 GPIO51 RX <- Octopus PD5 (USART2 TX)
-//   J7 pin 16 GPIO52 TX -> Octopus PD9 (USART3 RX)     J7 pin 19 GPIO49 RX <- Octopus PD8 (USART3 TX)
-//   J7 pins 2/4/6 VDD5V (supply from the Octopus), pins 7/8 GND
+// The sender (LightBurn over WiFi) is taken by the Octopus-Bridge, GPIO49/52 on J7 stay free.
+#define LINK_USB        1
 #define PIN_LINK_TX     50
 #define PIN_LINK_RX     51
-#define LINK_BAUD   115200
+#define LINK_BAUD   921600
 
-#define PIN_SENDER_TX   52
-#define PIN_SENDER_RX   49
-#define SENDER_BAUD 921600
-#define SENDER_PORT     23      // TCP port for the sender (telnet)
+// Gamepad receiver (D1 Mini ESP32 in the display housing) on J7, passed through to USB channel 1:
+//   J7 pin 9 GPIO2 TX -> D1 IO16 (RX)    J7 pin 11 GPIO3 RX <- D1 IO17 (TX)    J7 pin 1 3.3 V -> D1 3V3, pin 7 GND
+// (J2 "UART1" would fit as well, but its RX pad is torn off on this board)
+#define PIN_GAMEPAD_TX  2
+#define PIN_GAMEPAD_RX  3
+#define GAMEPAD_BAUD 921600
 
 // ESP32-C6 WiFi co-processor (ESP-Hosted over SDIO); its enable (reset) is IO32 (schematic V1.2),
 // the IO54 default of ESP-Hosted is a free pin on J7 here

@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <time.h>
 #include <lvgl.h>
 #include "ui.h"
 #include "link.h"
@@ -18,6 +19,7 @@
 #include "beep.h"
 #include "wlan.h"
 #include "display.h"
+#include "usb_link.h"
 
 #define LONG_PRESS_MS       600     // buttons that move the machine or change offsets
 #define FORCE_UNLOCK_MS    3000     // unlock without homing ($22 override locks)
@@ -52,7 +54,7 @@ enum action_t {
     A_LPwrDn, A_LPwrUp, A_LTimeDn, A_LTimeUp, A_Fire,
     A_SdRefresh, A_SdRun, A_SdPick,
     A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset,
-    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan, A_WebMode,
+    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan, A_WebMode, A_LinkMode, A_FwOk, A_FwCancel,
     A_GpChange, A_GpCancel, A_GpDefaults, A_GpPair, A_GpForget
 };
 
@@ -81,14 +83,14 @@ static struct {
     uint8_t probe_feed, laser_pwr, laser_time, step;
 } cfg = { 0.0f, 2, 4, 3, 3 };
 
-static ui_btn_t btns[110];
+static ui_btn_t btns[128];
 static int n_btns = 0;
 static screen_t screen = S_Main;
 static lv_obj_t *scr_obj[S_Count];
 
 // top bar
 static ui_btn_t *b_menu;
-static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link;
+static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link, *lbl_clock, *lbl_bt;
 
 // main
 static lv_obj_t *map_card, *map_canvas, *map_name, *dro_card, *dro_val[3], *dro_mach[3];
@@ -171,7 +173,10 @@ static int pending_screen = -1;         // screen change requested from a list r
 static lv_obj_t *lbl_wifi, *wifi_status, *wifi_dd, *wifi_ta[4], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
 static lv_obj_t *wifi_form;             // everything but the keyboard, moved up while typing
 static bool wifi_scanning = false, wifi_picked = false;  // a network was picked in the list after a scan
-static ui_btn_t *b_wifi_toggle, *b_web;
+static ui_btn_t *b_wifi_toggle, *b_web, *b_link;
+static lv_obj_t *fw_box, *fw_status;    // Settings > Display firmware: update dialog
+static lv_obj_t *lost_frame;            // blinking red frame while the controller is not connected
+static ui_btn_t *b_fw_ok;
 static ui_btn_t *b_sd_run;
 static char sd_sel[64] = "";
 static uint16_t files_seq = 0, msg_seq = 0;
@@ -537,6 +542,57 @@ static const char *error_text (uint16_t code)
     }
 }
 
+// Firmware update over the home network (wifi_cfg): OK switches there and waits for the firmware
+// (PlatformIO OTA or the upload page), Cancel goes back to the machine network.
+static void build_fw (lv_obj_t *root)
+{
+    char buf[64];
+
+    fw_box = box(root, 0, 0, SCR_W, SCR_H);
+    lv_obj_set_style_bg_color(fw_box, C(COL_BG2), 0);
+    lv_obj_set_style_bg_opa(fw_box, 235, 0);
+    lv_obj_add_flag(fw_box, LV_OBJ_FLAG_CLICKABLE);     // nothing below reacts meanwhile
+
+    lv_obj_t *card = glass(fw_box, 212, 110, 600, 380, 18);
+    lv_obj_t *l = label(card, &lv_font_montserrat_32, COL_TEXT, "Update");
+    lv_obj_set_pos(l, 28, 24);
+    snprintf(buf, sizeof(buf), "Display firmware %s, built %s %s", DISPLAY_VERSION, __DATE__, __TIME__);
+    l = label(card, &lv_font_montserrat_20, COL_MUTED, buf);
+    lv_obj_set_pos(l, 28, 82);
+    fw_status = label(card, &lv_font_montserrat_24, COL_TEXT, "");
+    lv_label_set_long_mode(fw_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(fw_status, 544);
+    lv_obj_set_pos(fw_status, 28, 130);
+
+    b_fw_ok = btn(card, 28, 280, 260, 72, 16, LV_SYMBOL_OK, "OK", COL_GREEN1, COL_GREEN2, A_FwOk);
+    btn(card, 312, 280, 260, 72, 16, LV_SYMBOL_CLOSE, "Cancel", 0, 0, A_FwCancel);
+    show(fw_box, false);
+}
+
+static void update_fw (void)
+{
+    char buf[128];
+    bool idle = !mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP));
+
+    if(!wifi_update_mode_on()) {
+        if(!*wifi_cfg.ssid)
+            strcpy(buf, "No home network set: enter it on the WiFi screen first.");
+        else if(!idle)
+            strcpy(buf, "Not while the machine is running.");
+        else
+            snprintf(buf, sizeof(buf), "OK connects to '%s' and waits for the new firmware.", wifi_cfg.ssid);
+        show(b_fw_ok->obj, true);
+        btn_enable(b_fw_ok, idle && *wifi_cfg.ssid);
+    } else {
+        if(wifi_state() == Wifi_Connected)
+            snprintf(buf, sizeof(buf), "Waiting for firmware\n%s.local   %s", wifi_host(), wifi_ip());
+        else
+            snprintf(buf, sizeof(buf), "Connecting to '%s'...  %s", wifi_cfg.ssid, wifi_fail_text());
+        show(b_fw_ok->obj, false);
+    }
+    set_text(fw_status, buf);
+}
+
 static void build_banner (lv_obj_t *root)
 {
     banner = box(root, 12, CARD_Y, SCR_W - 24, 56);
@@ -570,6 +626,8 @@ static void screen_show (screen_t s)
     show(lbl_wcs, top);
     show(lbl_link, top);
     show(lbl_wifi, top);
+    show(lbl_clock, top);
+    show(lbl_bt, top);
     if(s == S_Main)
         btn_set(b_menu, LV_SYMBOL_LIST, NULL, 0, 0, A_Menu);
     else
@@ -766,6 +824,12 @@ static void build_topbar (lv_obj_t *s)
     lv_obj_set_pos(lbl_pwr, 450, 15);
     lbl_wcs = label(s, &lv_font_montserrat_24, COL_WCS, "G54");
     lv_obj_set_pos(lbl_wcs, 610, 15);
+    lbl_clock = label(s, &lv_font_montserrat_24, 0xEBEEFA, "");     // empty until the time is known
+    lv_obj_set_style_text_align(lbl_clock, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_width(lbl_clock, 110);
+    lv_obj_set_pos(lbl_clock, 732, 15);
+    lbl_bt = label(s, &lv_font_montserrat_24, COL_Z, "");               // gamepad controller
+    lv_obj_set_pos(lbl_bt, 872, 15);
     lbl_wifi = label(s, &lv_font_montserrat_24, 0x50506E, LV_SYMBOL_WIFI);
     lv_obj_set_pos(lbl_wifi, 912, 9);
     lv_obj_set_style_pad_all(lbl_wifi, 6, 0);
@@ -1163,6 +1227,15 @@ static void groups_fill (void)
     }
     qsort(list_idx, n, sizeof(int), cmp_group);
 
+    // the display's own entry first, then the groups of the controller
+    lv_obj_t *fw = list_row(grp_list, "Display firmware", DISPLAY_VERSION, false);
+    lv_obj_add_event_cb(fw, [](lv_event_t *e) {
+        if(tap_valid()) {
+            show(fw_box, true);
+            lv_obj_move_foreground(fw_box);
+        }
+    }, LV_EVENT_CLICKED, NULL);
+
     for(int k = 0; k < n; k++) {
         int i = list_idx[k];
         lv_obj_t *r = list_row(grp_list, setlist.item[i].group, NULL, false);
@@ -1298,7 +1371,8 @@ static const char *wifi_entry (int i)
 
 static void build_wifi (lv_obj_t *scr)
 {
-    static const char *names[4] = { "Network", "Password", "OTA password", "Name" };
+    // the home network: time and firmware updates (the machine network comes from the bridge)
+    static const char *names[4] = { "Home network", "Password", "OTA password", "Name" };
     lv_obj_t *s = wifi_form = box(scr, 0, 0, SCR_W, SCR_H);
 
     wifi_status = label(s, &lv_font_montserrat_20, COL_TEXT, "");
@@ -1334,6 +1408,7 @@ static void build_wifi (lv_obj_t *scr)
     lv_obj_add_event_cb(wifi_dd, [](lv_event_t *e) { wifi_picked = true; }, LV_EVENT_VALUE_CHANGED, NULL);
     btn(s, 760, 146, 240, 62, 14, LV_SYMBOL_REFRESH, "Scan", 0, 0, A_WifiScan);
     b_web = btn(s, 760, 222, 240, 62, 14, NULL, "", 0, 0, A_WebMode);     // web interface off / view / control
+    b_link = btn(s, 760, 298, 240, 62, 14, LV_SYMBOL_USB, "", 0, 0, A_LinkMode);  // link over USB / cable
 
     for(int i = 0; i < 4; i++) {
         lv_obj_t *l = label(s, &lv_font_montserrat_24, COL_MUTED, names[i]);
@@ -1808,6 +1883,16 @@ static void action_run (int action, int arg)
             if(wifi_web_mode() == 2 && !*wifi_cfg.ota)
                 banner_show("Web control needs an OTA password", COL_ORANGE2, 3000);
             break;
+        case A_LinkMode:
+            usb_link_select(!usb_link_selected());
+            break;
+        case A_FwOk:
+            wifi_update_mode(true);
+            break;
+        case A_FwCancel:
+            wifi_update_mode(false);
+            show(fw_box, false);
+            break;
         case A_WifiScan:
             wifi_scan_start();
             wifi_scanning = true;
@@ -1815,7 +1900,9 @@ static void action_run (int action, int arg)
             lv_dropdown_set_options(wifi_dd, "Searching...");
             break;
         case A_WifiSave:
-            if(wifi_picked && !wifi_scanning && lv_dropdown_get_option_count(wifi_dd) && wifi_scan_result() > 0)
+            // the network shown in the list: when picked, or when none is stored yet (the first one of the list
+            // is preselected, picking it again changes nothing)
+            if((wifi_picked || !*wifi_cfg.ssid) && !wifi_scanning && lv_dropdown_get_option_count(wifi_dd) && wifi_scan_result() > 0)
                 lv_dropdown_get_selected_str(wifi_dd, wifi_cfg.ssid, sizeof(wifi_cfg.ssid));
             if(wifi_entry(1) != wifi_cfg.pass)
                 strlcpy(wifi_cfg.pass, wifi_entry(1), sizeof(wifi_cfg.pass));
@@ -2057,13 +2144,31 @@ static void update_topbar (void)
     set_text(lbl_pwr, buf);
     snprintf(buf, sizeof(buf), "G%u", 54 + mc.wcs);
     set_text(lbl_wcs, buf);
-    set_text(lbl_link, mc.online ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
-    // WiFi symbol: grey off, orange connecting, green connected; with a sender connected over WiFi
-    // it is shown dark on a cyan badge, clearly different from a connection over USB
+
+    time_t now = time(NULL);
+    if(wifi_time_valid())
+        strftime(buf, sizeof(buf), "%H:%M", localtime(&now));
+    else
+        *buf = '\0';
+    set_text(lbl_clock, buf);
+
+    // Bluetooth symbol while a gamepad controller is connected, red with its buttons enabled (Options)
+    bool pad = mc.online && (mc.gp_flags & GP_CONNECTED);
+    set_text(lbl_bt, pad ? LV_SYMBOL_BLUETOOTH : "");
+    lv_obj_set_style_text_color(lbl_bt, C(mc.gp_flags & GP_ENABLED ? COL_RED1 : COL_Z), 0);
+
+    link_path_t lp = usb_link_path();
+    set_text(lbl_link, !mc.online ? LV_SYMBOL_CLOSE : lp == Path_Usb ? LV_SYMBOL_USB : lp == Path_Wifi ? LV_SYMBOL_WIFI : LV_SYMBOL_OK);
+    // WiFi symbol: the home network only (the machine network shows in the link symbol right of it),
+    // hidden with "Home: Off", grey while switched on but in the machine network (the display has one
+    // radio, it goes home for the time and updates only), orange connecting, green connected; with a sender
+    // connected over WiFi it is shown dark on a cyan badge, clearly different from a connection over USB
     bool sender = wifi_sender();
+    wifi_state_t home = wifi_home_state();
+    set_text(lbl_wifi, sender || (wifi_cfg.enabled && *wifi_cfg.ssid) ? LV_SYMBOL_WIFI : "");
     lv_obj_set_style_bg_opa(lbl_wifi, sender ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_text_color(lbl_wifi, C(sender ? COL_BG2 : wifi_state() == Wifi_Connected ? COL_GREEN1 :
-                                             wifi_state() == Wifi_Connecting ? COL_ORANGE1 : 0x50506E), 0);
+    lv_obj_set_style_text_color(lbl_wifi, C(sender ? COL_BG2 : home == Wifi_Connected ? COL_GREEN1 :
+                                             home == Wifi_Connecting ? COL_ORANGE1 : 0x50506E), 0);
     lv_obj_set_style_text_color(lbl_link, C(mc.online ? COL_GREEN1 : COL_RED1), 0);
 }
 
@@ -2118,6 +2223,15 @@ static void update_main_buttons (void)
     }
 }
 
+// m:ss, or h:mm h for long jobs (8 h jobs fit the progress line)
+static void duration (char *buf, size_t size, uint32_t secs, bool hours)
+{
+    if(hours)
+        snprintf(buf, size, "%lu:%02lu h", (unsigned long)(secs / 3600), (unsigned long)(secs / 60 % 60));
+    else
+        snprintf(buf, size, "%lu:%02lu", (unsigned long)(secs / 60), (unsigned long)(secs % 60));
+}
+
 static void update_main (void)
 {
     char buf[96];
@@ -2144,9 +2258,21 @@ static void update_main (void)
         if(sd) {
             lv_obj_set_width(prog_fill, (SIDE_W - 36) * mc.pct / 1000);
             if(mc.pct >= 20 && job_secs >= 10) {
+                // elapsed of the estimated total, and when it ends (or the time left without a clock)
                 uint32_t left = (uint32_t)((uint64_t)job_secs * (1000 - mc.pct) / mc.pct);
-                snprintf(buf, sizeof(buf), "%d %%    %lu:%02lu elapsed    about %lu:%02lu left", mc.pct / 10,
-                          job_secs / 60, job_secs % 60, left / 60, left % 60);
+                char el[12], tot[12], end[16];
+                bool h = job_secs + left >= 3600;
+                duration(el, sizeof(el), job_secs, h);
+                duration(tot, sizeof(tot), job_secs + left, h);
+                if(wifi_time_valid()) {
+                    time_t t = time(NULL) + left;
+                    strftime(end, sizeof(end), "ends %H:%M", localtime(&t));
+                } else {
+                    char l[12];
+                    duration(l, sizeof(l), left, h);
+                    snprintf(end, sizeof(end), "%s left", l);
+                }
+                snprintf(buf, sizeof(buf), "%d %%    %s of %s    %s", mc.pct / 10, el, tot, end);
             } else
                 snprintf(buf, sizeof(buf), "%d %%    %lu:%02lu elapsed", mc.pct / 10, job_secs / 60, job_secs % 60);
         } else
@@ -2319,9 +2445,31 @@ static void update_screen (void)
                     set_text(wifi_status, buf);
                     break;
             }
+            // paired with a bridge: its machine network is always on and not shown by name, the
+            // settings here are the home network (time, firmware updates)
+            if(*wifi_machine_ssid() && !wifi_update_mode_on()) {
+                link_path_t lp = usb_link_path();
+                wifi_state_t home = wifi_home_state();
+                char h[48];
+                if(!wifi_cfg.enabled)
+                    strcpy(h, "off");
+                else if(!*wifi_cfg.ssid)
+                    strcpy(h, "on - enter it");
+                else if(home == Wifi_Connected)
+                    snprintf(h, sizeof(h), "%s  %s", wifi_cfg.ssid, wifi_ip());
+                else if(home == Wifi_Connecting)
+                    strcpy(h, "connecting...");
+                else
+                    strcpy(h, "on (used with USB)");
+                snprintf(buf, sizeof(buf), "Link: %s    Home: %s", !mc.online ? "connecting..." : lp == Path_Usb ? "USB" :
+                         lp == Path_Wifi ? "machine network" : "cable", h);
+                set_text(wifi_status, buf);
+            }
             set_text(b_web->text, wifi_web_mode() == 2 ? "Web: Control" : wifi_web_mode() == 1 ? "Web: View" : "Web: Off");
             btn_colors(b_web, wifi_web_mode() == 2 ? COL_ORANGE1 : 0, wifi_web_mode() == 2 ? COL_ORANGE2 : 0);
-            set_text(b_wifi_toggle->text, wifi_cfg.enabled ? "On" : "Off");
+            set_text(b_link->text, usb_link_selected() ? "Link: Auto" : "Link: Cable");     // auto: USB, else WiFi
+            btn_layout(b_link);
+            set_text(b_wifi_toggle->text, wifi_cfg.enabled ? "Home: On" : "Home: Off");
             btn_layout(b_wifi_toggle);
             btn_colors(b_wifi_toggle, wifi_cfg.enabled ? COL_GREEN1 : 0, wifi_cfg.enabled ? COL_GREEN2 : 0);
             break;
@@ -2376,6 +2524,15 @@ static void update_screen (void)
 
 void ui_update (void)
 {
+    if(!lv_obj_has_flag(fw_box, LV_OBJ_FLAG_HIDDEN))
+        update_fw();
+
+    // no connection to the controller for 1 s (online drops after 0.5 s): red frame, blinking at 1 Hz
+    static uint32_t online_seen = 0;
+    if(mc.online)
+        online_seen = millis();
+    show(lost_frame, millis() - online_seen > 500 && millis() % 1000 < 500);
+
     // job: from leaving idle into a cycle until idle again (holds included)
     bool job = !!(mc.state & (STATE_CYCLE | STATE_HOLD | STATE_TOOL_CHANGE));
     bool alarm = mc.online && (mc.state & (STATE_ALARM | STATE_ESTOP));
@@ -2475,7 +2632,18 @@ void ui_init (void)
     build_wifi(scr_obj[S_Wifi]);
     build_gamepad(scr_obj[S_Gamepad]);
     build_topbar(root);
+    build_fw(root);
     build_banner(root);
+
+    // on top of everything, touches go through
+    lost_frame = box(root, 0, 0, SCR_W, SCR_H);
+    lv_obj_set_style_bg_opa(lost_frame, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(lost_frame, C(COL_RED1), 0);
+    lv_obj_set_style_border_width(lost_frame, 8, 0);
+    lv_obj_set_style_border_opa(lost_frame, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(lost_frame, 0, 0);
+    lv_obj_remove_flag(lost_frame, LV_OBJ_FLAG_CLICKABLE);
+    show(lost_frame, false);
 
     map_init();
     layout_main();

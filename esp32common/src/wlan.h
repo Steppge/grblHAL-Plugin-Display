@@ -31,6 +31,25 @@ const char *wifi_ip (void);
 const char *wifi_host (void);              // machine name: <name>.local, also the DHCP host name
 void wifi_set_host (const char *name);      // stored, only a-z, 0-9 and - are kept, applied by wifi_apply()
 bool wifi_sender (void);                    // a sender (LightBurn) is connected on SENDER_PORT
+
+// Machine network of the Octopus-Bridge (its hidden access point at the controller): once its name and
+// password came over the USB cable it is used instead of the network in wifi_cfg, whatever wifi_cfg.enabled
+// says (that one switches the home network for the time and firmware updates only). Not while the display
+// is on the USB cable: then the bridge has its access point off and the home network is the normal one.
+void wifi_set_machine (const char *ssid, const char *pass);    // stored, (re)connects
+const char *wifi_machine_ssid (void);       // "" = not paired with a bridge
+bool wifi_machine (void);                   // connected to the machine network
+void wifi_machine_allowed (bool on);        // false while the display is on the USB cable of the bridge
+wifi_state_t wifi_home_state (void);        // state of the home network (wifi_cfg), Wifi_Off while in the machine network
+
+// Time from the network in wifi_cfg (home network, with internet), only while that one is in use: never
+// at the cost of the machine network, the clock runs on by itself.
+void wifi_time_poll (void);
+bool wifi_time_valid (void);                // localtime() is set (time zone Germany)
+
+// Firmware update: the network in wifi_cfg until switched off again
+void wifi_update_mode (bool on);
+bool wifi_update_mode_on (void);
 uint8_t wifi_web_mode (void);               // web interface: 0 off, 1 view, 2 control (web.h)
 void wifi_set_web_mode (uint8_t mode);      // stored
 

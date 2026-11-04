@@ -2,6 +2,7 @@
 
 #include "link.h"
 #include "pins.h"
+#include "wlan.h"
 
 #define LINK_TIMEOUT_MS     500     // no status line for this long = offline
 #define CMD_RETRY_MS        100     // busy: send the command line again after this time
@@ -15,7 +16,8 @@ file_list_t files = {};
 preview_t preview = {};
 settings_list_t setlist = {};
 
-static HardwareSerial &port = Serial1;
+static HardwareSerial &uart = Serial1;
+static Stream *port = &uart;    // the UART, or a USB channel set with link_use()
 
 static struct {
     char line[96];
@@ -35,7 +37,7 @@ void link_send (const char *body)
         sum ^= (uint8_t)*p;
 
     snprintf(line, sizeof(line), ">%s*%02X\n", body, sum);
-    port.write(line);
+    port->write(line);
 }
 
 void link_rt (uint8_t cmd)
@@ -231,6 +233,14 @@ static void handle_line (char *line)
         }
     } else if(!strncmp(line, "DN,", 3))
         strlcpy(mc.job, line + 3, sizeof(mc.job));
+    else if(!strncmp(line, "BW,", 3)) {
+        // Octopus-Bridge: name and password of its machine network, sent over the USB cable
+        char *pass = strchr(line + 3, ',');
+        if(pass) {
+            *pass++ = '\0';
+            wifi_set_machine(line + 3, pass);
+        }
+    }
     else if(!strncmp(line, "FL,", 3)) {
         if(files.done) {
             files.done = false;
@@ -315,8 +325,13 @@ void link_preview (const char *name)
 void link_begin (void)
 {
     setlist.item = (setting_t *)ps_calloc(SETTINGS_MAX, sizeof(setting_t));
-    port.setRxBufferSize(8192);     // preview rows arrive in bursts while LVGL is drawing
-    port.begin(LINK_BAUD, SERIAL_8N1, PIN_LINK_RX, PIN_LINK_TX);
+    uart.setRxBufferSize(8192);     // preview rows arrive in bursts while LVGL is drawing
+    uart.begin(LINK_BAUD, SERIAL_8N1, PIN_LINK_RX, PIN_LINK_TX);
+}
+
+void link_use (Stream *s)
+{
+    port = s ? s : &uart;
 }
 
 void link_poll (void)
@@ -324,8 +339,8 @@ void link_poll (void)
     static char line[220];
     static uint16_t len = 0;
 
-    while(port.available()) {
-        int c = port.read();
+    while(port->available()) {
+        int c = port->read();
         if(c == '$')
             len = 0;
         else if(c == '\n' || c == '\r') {
