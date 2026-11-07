@@ -49,6 +49,7 @@ bool wifi_time_valid (void);                // localtime() is set (time zone Ger
 
 // Firmware update: the network in wifi_cfg until switched off again
 void wifi_update_mode (bool on);
+void wifi_deck_mode (bool on);          // PC-Deck mode: home network only, never the machine network
 bool wifi_update_mode_on (void);
 uint8_t wifi_web_mode (void);               // web interface: 0 off, 1 view, 2 control (web.h)
 void wifi_set_web_mode (uint8_t mode);      // stored

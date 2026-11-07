@@ -8,9 +8,7 @@
 
 enum link_path_t { Path_None, Path_Usb, Path_Wifi };
 
-void usb_link_begin (void);         // also selects the stored transport of the link
+void usb_link_begin (void);
 bool usb_link_mounted (void);       // the bridge has opened the link channel
 link_path_t usb_link_path (void);   // the way the link takes right now
-bool usb_link_selected (void);      // link over USB or WiFi (else over the cable on J7)
-void usb_link_select (bool usb);    // stored
 void usb_link_report (void);        // state and byte counts on the console

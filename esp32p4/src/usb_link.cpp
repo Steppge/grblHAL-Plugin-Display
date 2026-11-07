@@ -10,7 +10,6 @@
 // gamepad is passed through to the D1 Mini UART by the task itself (latest state wins, nothing is queued).
 
 #include <Arduino.h>
-#include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "USB.h"
@@ -38,7 +37,6 @@
 
 static StreamBufferHandle_t rx_buf, tx_buf;
 static HardwareSerial &gp_uart = Serial2;
-static bool use_usb = true;                         // link over USB or WiFi, else over the cable on J7
 static volatile uint32_t gp_from_d1, gp_to_d1;     // bytes, for usb_link_report()
 static volatile link_path_t path = Path_None;
 static WiFiClient tcp;
@@ -123,7 +121,7 @@ static void usb_task (void *arg)
     for(;;) {
         bool usb = tud_mounted() && tud_cdc_n_connected(CH_LINK);
         bool wifi = !usb && wifi_machine();     // nothing over WiFi while the cable is in
-        bool net = net_update(wifi && use_usb);
+        bool net = net_update(wifi);
 
         path = usb ? Path_Usb : net ? Path_Wifi : Path_None;
 
@@ -202,11 +200,6 @@ static void usb_task (void *arg)
 
 void usb_link_begin (void)
 {
-    Preferences prefs;
-    prefs.begin("link", true);
-    use_usb = prefs.getBool("usb", true);
-    prefs.end();
-
     rx_buf = xStreamBufferCreate(LINK_RX_BUF, 1);
     tx_buf = xStreamBufferCreate(LINK_TX_BUF, 1);
 
@@ -219,7 +212,7 @@ void usb_link_begin (void)
     USB.begin();
     xTaskCreatePinnedToCore(usb_task, "usb_link", 4096, NULL, 5, NULL, 0);
 
-    link_use(use_usb ? &usb_stream : NULL);
+    link_use(&usb_stream);
 }
 
 bool usb_link_mounted (void)
@@ -231,30 +224,14 @@ void usb_link_report (void)
 {
     static const char *paths[] = { "-", "USB", "WiFi" };
 
-    Serial.printf("link %s (now %s), USB %s, machine network '%s' %s, gamepad channel %s, D1 UART GPIO%d TX GPIO%d RX %d baud: "
+    Serial.printf("link over %s, USB %s, machine network '%s' %s, gamepad channel %s, D1 UART GPIO%d TX GPIO%d RX %d baud: "
                   "%lu bytes from the D1, %lu to it\n",
-                  use_usb ? "auto" : "over the cable", paths[path], tud_mounted() ? "mounted" : "-", wifi_machine_ssid(),
+                  paths[path], tud_mounted() ? "mounted" : "-", wifi_machine_ssid(),
                   wifi_machine() ? "connected" : "-", tud_cdc_n_connected(CH_GAMEPAD) ? "open" : "closed",
                   PIN_GAMEPAD_TX, PIN_GAMEPAD_RX, GAMEPAD_BAUD, (unsigned long)gp_from_d1, (unsigned long)gp_to_d1);
 }
 
 link_path_t usb_link_path (void)
 {
-    return use_usb ? path : Path_None;
-}
-
-bool usb_link_selected (void)
-{
-    return use_usb;
-}
-
-void usb_link_select (bool usb)
-{
-    Preferences prefs;
-
-    use_usb = usb;
-    prefs.begin("link", false);
-    prefs.putBool("usb", usb);
-    prefs.end();
-    link_use(usb ? &usb_stream : NULL);
+    return path;
 }

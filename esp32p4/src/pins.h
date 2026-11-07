@@ -19,14 +19,17 @@
 #define PIN_AMP_EN      30
 
 // Link to the controller: over USB-C "USB 2.0" (J16) to the Octopus-Bridge (ESP32-S3 at the controller),
-// two CDC channels: 0 = display link, 1 = gamepad (passed through to the D1 Mini below), see usb_link.cpp.
-// As a last resort the link runs over a cable on the 24-pin header J7 (3.3 V, direct GPIOs), display only:
-//   J7 pin 20 GPIO50 TX -> Octopus PD6 (USART2 RX)     J7 pin 18 GPIO51 RX <- Octopus PD5 (USART2 TX)
-// The sender (LightBurn over WiFi) is taken by the Octopus-Bridge, GPIO49/52 on J7 stay free.
+// two CDC channels: 0 = display link, 1 = gamepad (passed through to the D1 Mini below), see usb_link.cpp,
+// or over the machine network of the bridge. There is no cable link on J7 any more.
 #define LINK_USB        1
-#define PIN_LINK_TX     50
-#define PIN_LINK_RX     51
-#define LINK_BAUD   921600
+
+// Rotary encoder EC11 on J7 (PC-Deck mode, as on the PC-Deck): A, B and the push button to GND, internal pull-ups
+//   J7 pin 20 GPIO50 A    J7 pin 18 GPIO51 B    J7 pin 15 GPIO5 button    J7 pin 21 GND
+#define PIN_ENC_A       50
+#define PIN_ENC_B       51
+#define PIN_ENC_SW      5
+#define ENC_STEPS       4       // edges per detent
+#define ENC_REVERSE     0
 
 // Gamepad receiver (D1 Mini ESP32 in the display housing) on J7, passed through to USB channel 1:
 //   J7 pin 9 GPIO2 TX -> D1 IO16 (RX)    J7 pin 11 GPIO3 RX <- D1 IO17 (TX)    J7 pin 1 3.3 V -> D1 3V3, pin 7 GND

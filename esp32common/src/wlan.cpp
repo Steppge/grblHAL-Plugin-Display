@@ -101,11 +101,12 @@ static char host[33] = WIFI_HOST_DEFAULT;
 static char m_ssid[33] = "", m_pass[65] = "";      // machine network of the Octopus-Bridge, see wlan.h
 static bool home_mode = false;      // in the network of wifi_cfg although paired: firmware update
 static bool machine_ok = true;      // the display is not on the USB cable of the bridge
+static bool deck_mode = false;      // PC-Deck mode: only the home network, also with "Home: Off"
 
-// the machine network is used when paired, without the USB cable, and not for a firmware update
+// the machine network is used when paired, without the USB cable, not for a firmware update and not as a PC-Deck
 static bool use_machine (void)
 {
-    return *m_ssid && machine_ok && !home_mode;
+    return *m_ssid && machine_ok && !home_mode && !deck_mode;
 }
 
 #define TIME_TZ         "CET-1CEST,M3.5.0,M10.5.0/3"   // Germany, summer time
@@ -312,7 +313,7 @@ static void start (void)
     // the machine network of a bridge is on without the USB cable, wifi_cfg.enabled only switches the
     // home network; paired, the radio stays on (the co-processor of the ESP32-P4 does not like a quick
     // off and on, the cable may be pulled any moment)
-    if(!use_machine() && (!wifi_cfg.enabled || !*wifi_cfg.ssid)) {
+    if(!use_machine() && (!(wifi_cfg.enabled || deck_mode) || !*wifi_cfg.ssid)) {
         if(board_ready) {
             if(*m_ssid)
                 WiFi.disconnect();
@@ -631,6 +632,14 @@ void wifi_update_mode (bool on)
         prefs.putBytes("cfg", &wifi_cfg, sizeof(wifi_cfg));
     }
     to_home(on);
+}
+
+void wifi_deck_mode (bool on)
+{
+    if(on != deck_mode) {
+        deck_mode = on;
+        start();
+    }
 }
 
 bool wifi_update_mode_on (void)

@@ -20,6 +20,7 @@
 #include "wlan.h"
 #include "display.h"
 #include "usb_link.h"
+#include "deck.h"
 
 #define LONG_PRESS_MS       600     // buttons that move the machine or change offsets
 #define FORCE_UNLOCK_MS    3000     // unlock without homing ($22 override locks)
@@ -54,8 +55,8 @@ enum action_t {
     A_LPwrDn, A_LPwrUp, A_LTimeDn, A_LTimeUp, A_Fire,
     A_SdRefresh, A_SdRun, A_SdPick,
     A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset,
-    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan, A_WebMode, A_LinkMode, A_FwOk, A_FwCancel,
-    A_GpChange, A_GpCancel, A_GpDefaults, A_GpPair, A_GpForget
+    A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan, A_WebMode, A_FwOk, A_FwCancel,
+    A_GpChange, A_GpCancel, A_GpDefaults, A_GpPair, A_GpForget, A_Mode
 };
 
 enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Gamepad, S_Wifi, S_Count };
@@ -89,7 +90,7 @@ static screen_t screen = S_Main;
 static lv_obj_t *scr_obj[S_Count];
 
 // top bar
-static ui_btn_t *b_menu;
+static ui_btn_t *b_menu, *b_mode;
 static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link, *lbl_clock, *lbl_bt;
 
 // main
@@ -173,9 +174,9 @@ static int pending_screen = -1;         // screen change requested from a list r
 static lv_obj_t *lbl_wifi, *wifi_status, *wifi_dd, *wifi_ta[4], *wifi_kb, *ota_box, *ota_bar, *ota_lbl;
 static lv_obj_t *wifi_form;             // everything but the keyboard, moved up while typing
 static bool wifi_scanning = false, wifi_picked = false;  // a network was picked in the list after a scan
-static ui_btn_t *b_wifi_toggle, *b_web, *b_link;
+static ui_btn_t *b_wifi_toggle, *b_web;
 static lv_obj_t *fw_box, *fw_status;    // Settings > Display firmware: update dialog
-static lv_obj_t *lost_frame;            // blinking red frame while the controller is not connected
+static lv_obj_t *lost_box, *lost_lbl;   // message in the middle while the controller is not connected
 static ui_btn_t *b_fw_ok;
 static ui_btn_t *b_sd_run;
 static char sd_sel[64] = "";
@@ -571,7 +572,7 @@ static void build_fw (lv_obj_t *root)
 
 static void update_fw (void)
 {
-    char buf[128];
+    char buf[192];
     bool idle = !mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP));
 
     if(!wifi_update_mode_on()) {
@@ -581,6 +582,7 @@ static void update_fw (void)
             strcpy(buf, "Not while the machine is running.");
         else
             snprintf(buf, sizeof(buf), "OK connects to '%s' and waits for the new firmware.", wifi_cfg.ssid);
+        strlcat(buf, "\nOr: firmware.bin on the display's SD card, then switch off and on.", sizeof(buf));
         show(b_fw_ok->obj, true);
         btn_enable(b_fw_ok, idle && *wifi_cfg.ssid);
     } else {
@@ -824,6 +826,7 @@ static void build_topbar (lv_obj_t *s)
     lv_obj_set_pos(lbl_pwr, 450, 15);
     lbl_wcs = label(s, &lv_font_montserrat_24, COL_WCS, "G54");
     lv_obj_set_pos(lbl_wcs, 610, 15);
+    b_mode = btn(s, 662, 6, 66, 46, 14, NULL, "PC", 0, 0, A_Mode);    // CNC <-> PC-Deck
     lbl_clock = label(s, &lv_font_montserrat_24, 0xEBEEFA, "");     // empty until the time is known
     lv_obj_set_style_text_align(lbl_clock, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_width(lbl_clock, 110);
@@ -1408,7 +1411,6 @@ static void build_wifi (lv_obj_t *scr)
     lv_obj_add_event_cb(wifi_dd, [](lv_event_t *e) { wifi_picked = true; }, LV_EVENT_VALUE_CHANGED, NULL);
     btn(s, 760, 146, 240, 62, 14, LV_SYMBOL_REFRESH, "Scan", 0, 0, A_WifiScan);
     b_web = btn(s, 760, 222, 240, 62, 14, NULL, "", 0, 0, A_WebMode);     // web interface off / view / control
-    b_link = btn(s, 760, 298, 240, 62, 14, LV_SYMBOL_USB, "", 0, 0, A_LinkMode);  // link over USB / cable
 
     for(int i = 0; i < 4; i++) {
         lv_obj_t *l = label(s, &lv_font_montserrat_24, COL_MUTED, names[i]);
@@ -1688,9 +1690,10 @@ void ui_ota_progress (unsigned pct)
 
     if(ota_box == NULL) {
         ota_box = box(lv_screen_active(), 0, 0, SCR_W, SCR_H);
-        lv_obj_set_style_bg_color(ota_box, C(COL_BG2), 0);
-        lv_obj_set_style_bg_opa(ota_box, 235, 0);
-        ota_lbl = label(ota_box, &lv_font_montserrat_36, COL_TEXT, "");
+        // black with only the progress: writing the flash stalls the PSRAM frame buffer and the picture twitches
+        lv_obj_set_style_bg_color(ota_box, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(ota_box, LV_OPA_COVER, 0);
+        ota_lbl = label(ota_box, &lv_font_montserrat_24, COL_MUTED, "");
         lv_obj_align(ota_lbl, LV_ALIGN_CENTER, 0, -50);
         lv_obj_t *track = box(ota_box, 212, 320, 600, 22);
         lv_obj_set_style_radius(track, 11, 0);
@@ -1702,7 +1705,8 @@ void ui_ota_progress (unsigned pct)
     }
 
     lv_obj_move_foreground(ota_box);
-    snprintf(buf, sizeof(buf), "Firmware update %u %%", pct);
+    display_backlight(pct > 0 && pct < 100 ? 8 : 100);     // the picture flickers turquoise while the flash is written
+    snprintf(buf, sizeof(buf), "%u %%", pct);
     set_text(ota_lbl, buf);
     lv_obj_set_width(ota_bar, 600 * pct / 100);
 }
@@ -1868,6 +1872,22 @@ static void action_run (int action, int arg)
 
     switch(action) {
         case A_Menu:        screen_show(S_Menu); break;
+        case A_Mode: {
+            // without the USB cable the PC-Deck leaves the machine network: not while a job runs from a sender
+            bool on = !deck_mode();
+            bool idle = !mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP)) ||
+                        (mc.flags & DL_FLAG_SD_JOB);
+            if(on && !usb_link_mounted() && !idle)
+                banner_show("Not while a job runs from the sender (SD jobs go on)", COL_ORANGE2, 3000);
+            else {
+                deck_set_mode(on);
+                show(b_menu->obj, !on);
+                set_text(b_mode->text, on ? "CNC" : "PC");
+                btn_layout(b_mode);
+                btn_colors(b_mode, on ? COL_GREEN1 : 0, on ? COL_GREEN2 : 0);
+            }
+            break;
+        }
         case A_Back:
             screen_show(screen == S_Menu || (screen == S_Move && move_from_main) ? S_Main : screen == S_SetEdit ? S_SetList :
                         screen == S_SetList || screen == S_Gamepad ? S_SetGroups : S_Menu);
@@ -1882,9 +1902,6 @@ static void action_run (int action, int arg)
             wifi_set_web_mode((wifi_web_mode() + 1) % 3);
             if(wifi_web_mode() == 2 && !*wifi_cfg.ota)
                 banner_show("Web control needs an OTA password", COL_ORANGE2, 3000);
-            break;
-        case A_LinkMode:
-            usb_link_select(!usb_link_selected());
             break;
         case A_FwOk:
             wifi_update_mode(true);
@@ -2462,13 +2479,11 @@ static void update_screen (void)
                 else
                     strcpy(h, "on (used with USB)");
                 snprintf(buf, sizeof(buf), "Link: %s    Home: %s", !mc.online ? "connecting..." : lp == Path_Usb ? "USB" :
-                         lp == Path_Wifi ? "machine network" : "cable", h);
+                         lp == Path_Wifi ? "machine network" : "-", h);
                 set_text(wifi_status, buf);
             }
             set_text(b_web->text, wifi_web_mode() == 2 ? "Web: Control" : wifi_web_mode() == 1 ? "Web: View" : "Web: Off");
             btn_colors(b_web, wifi_web_mode() == 2 ? COL_ORANGE1 : 0, wifi_web_mode() == 2 ? COL_ORANGE2 : 0);
-            set_text(b_link->text, usb_link_selected() ? "Link: Auto" : "Link: Cable");     // auto: USB, else WiFi
-            btn_layout(b_link);
             set_text(b_wifi_toggle->text, wifi_cfg.enabled ? "Home: On" : "Home: Off");
             btn_layout(b_wifi_toggle);
             btn_colors(b_wifi_toggle, wifi_cfg.enabled ? COL_GREEN1 : 0, wifi_cfg.enabled ? COL_GREEN2 : 0);
@@ -2527,11 +2542,20 @@ void ui_update (void)
     if(!lv_obj_has_flag(fw_box, LV_OBJ_FLAG_HIDDEN))
         update_fw();
 
-    // no connection to the controller for 1 s (online drops after 0.5 s): red frame, blinking at 1 Hz
+    // no connection to the controller for 1 s (online drops after 0.5 s): red message in the middle, blinking
+    // at 1 Hz. grblHAL sends no status during the homing moves, so then only "Homing" for up to a minute.
     static uint32_t online_seen = 0;
+    static int lost_mode = -1;
     if(mc.online)
         online_seen = millis();
-    show(lost_frame, millis() - online_seen > 500 && millis() % 1000 < 500);
+    uint32_t off = millis() - online_seen;
+    int mode = off <= 500 ? 0 : (mc.state & STATE_HOMING) && off < 60000 ? 1 : 2;
+    if(mode != lost_mode) {
+        lost_mode = mode;
+        lv_obj_set_style_bg_color(lost_box, C(mode == 1 ? COL_BG2 : COL_RED2), 0);
+        set_text(lost_lbl, mode == 1 ? LV_SYMBOL_HOME "  Homing ..." : LV_SYMBOL_WARNING "  No connection to the machine");
+    }
+    show(lost_box, !deck_mode() && (mode == 1 || (mode == 2 && millis() % 1000 < 500)));
 
     // job: from leaving idle into a cycle until idle again (holds included)
     bool job = !!(mc.state & (STATE_CYCLE | STATE_HOLD | STATE_TOOL_CHANGE));
@@ -2631,19 +2655,19 @@ void ui_init (void)
     build_settings(scr_obj[S_SetGroups], scr_obj[S_SetList], scr_obj[S_SetEdit]);
     build_wifi(scr_obj[S_Wifi]);
     build_gamepad(scr_obj[S_Gamepad]);
+    deck_ui(root, 60);              // PC-Deck page below the status bar, over the machine screens
     build_topbar(root);
     build_fw(root);
     build_banner(root);
 
     // on top of everything, touches go through
-    lost_frame = box(root, 0, 0, SCR_W, SCR_H);
-    lv_obj_set_style_bg_opa(lost_frame, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_color(lost_frame, C(COL_RED1), 0);
-    lv_obj_set_style_border_width(lost_frame, 8, 0);
-    lv_obj_set_style_border_opa(lost_frame, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(lost_frame, 0, 0);
-    lv_obj_remove_flag(lost_frame, LV_OBJ_FLAG_CLICKABLE);
-    show(lost_frame, false);
+    lost_box = box(root, (SCR_W - 640) / 2, (SCR_H - 120) / 2, 640, 120);
+    lv_obj_set_style_radius(lost_box, 20, 0);
+    lv_obj_set_style_bg_opa(lost_box, 235, 0);
+    lv_obj_remove_flag(lost_box, LV_OBJ_FLAG_CLICKABLE);
+    lost_lbl = label(lost_box, &lv_font_montserrat_32, COL_TEXT, "");
+    lv_obj_center(lost_lbl);
+    show(lost_box, false);
 
     map_init();
     layout_main();

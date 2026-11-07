@@ -1,6 +1,7 @@
 // grblHAL touch display: Elecrow CrowPanel Advanced 9" ESP32-P4 (1024x600, EK79007 + GT911).
 // Talks to the controller over USB to the Octopus-Bridge (usb_link.cpp, the gamepad receiver passed through)
-// or a serial cable on header J7; shared code in ../esp32common: link, WiFi with OTA and web interface.
+// or its machine network; shared code in ../esp32common: link, WiFi with OTA and web interface.
+// Firmware updates also from the microSD card at start (sd_update.cpp).
 
 #include <Arduino.h>
 #include <lvgl.h>
@@ -11,6 +12,8 @@
 #include "wlan.h"
 #include "ui.h"
 #include "usb_link.h"
+#include "sd_update.h"
+#include "deck.h"
 
 #define UI_MS   100     // ui_update() interval
 
@@ -26,25 +29,11 @@ static void ota_progress (unsigned pct)
     lv_refr_now(NULL);
 }
 
-// Settings over the serial console until the display has its own WiFi screen:
+// Settings over the serial console (lower case lines; the PC-Deck app sends upper case ones, see deck.cpp):
 //   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, status
-static void console (void)
+static void console (char *line)
 {
-    static char line[100];
-    static uint8_t len = 0;
-
-    while(Serial.available()) {
-        char c = Serial.read();
-        if(c != '\n' && c != '\r') {
-            if(len < sizeof(line) - 1)
-                line[len++] = c;
-            continue;
-        }
-        if(len == 0)
-            continue;
-        line[len] = '\0';
-        len = 0;
-
+    {
         char *arg = strchr(line, ' ');
         if(arg)
             *arg++ = '\0';
@@ -65,7 +54,7 @@ static void console (void)
             wifi_cfg.enabled = !strcmp(arg, "on");
         else if(strcmp(line, "status")) {
             Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, status");
-            continue;
+            return;
         }
 
         if(strcmp(line, "status") && strcmp(line, "web"))
@@ -81,7 +70,11 @@ static void console (void)
 
 void setup (void)
 {
-    Serial.begin(115200);
+    Serial.setRxBufferSize(16384);  // a whole PC-Deck icon (8 KB) and the commands around it
+    Serial.begin(921600);           // the speed of the PC-Deck app, also for the console
+    // the receive interrupt by default only comes at 120 of the 128 FIFO bytes: 8 bytes = 87 us at 921600 baud,
+    // too little room against other interrupts, PC-Deck blocks of 4 KB lost bytes. 32 leaves 1 ms.
+    Serial.setRxFIFOFull(32);
     delay(200);
     Serial.printf("\ngrblHAL display P4 %s, built %s %s, chip rev %d, %u MHz, PSRAM %u bytes\n", DISPLAY_VERSION, __DATE__, __TIME__,
                   ESP.getChipRevision(), ESP.getCpuFreqMHz(), ESP.getPsramSize());
@@ -96,11 +89,13 @@ void setup (void)
         Serial.println("touch ok");
     }
 
+    sd_update_check(disp != NULL);  // before WiFi: the card and the WiFi chip share the SDMMC host
+
     beep_begin();
     link_begin();
     usb_link_begin();
-    Serial.printf("link over %s\n", usb_link_selected() ? "USB" : "the cable on J7");
     wifi_begin(ota_progress);       // before the user interface: the WiFi chip link needs internal DMA memory
+    deck_begin(console);
     if(disp)
         ui_init();
     Serial.printf("free internal RAM %u bytes, PSRAM %u bytes\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -112,7 +107,7 @@ void loop (void)
     static uint32_t last_ui = 0;
 
     link_poll();
-    console();
+    deck_poll();                    // also reads the console
 
     // firmware updates only while the machine is idle, in alarm or not connected
     wifi_poll(!mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP)));

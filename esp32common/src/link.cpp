@@ -325,8 +325,10 @@ void link_preview (const char *name)
 void link_begin (void)
 {
     setlist.item = (setting_t *)ps_calloc(SETTINGS_MAX, sizeof(setting_t));
+#ifdef PIN_LINK_TX                  // the P4 display has no UART link, only USB and WiFi (link_use)
     uart.setRxBufferSize(8192);     // preview rows arrive in bursts while LVGL is drawing
     uart.begin(LINK_BAUD, SERIAL_8N1, PIN_LINK_RX, PIN_LINK_TX);
+#endif
 }
 
 void link_use (Stream *s)
