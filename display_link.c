@@ -152,6 +152,7 @@
 
 static const io_stream_t *dl_stream = NULL;
 static on_execute_realtime_ptr on_execute_realtime;
+static on_state_change_ptr on_state_change;
 
 // Gamepad plugin (optional): learning a button for the button assignment on the display.
 // gamepad_plugin.c provides the real functions.
@@ -991,6 +992,16 @@ static void send_info (void)
     send_line(body);
 }
 
+// The homing cycle runs no realtime handlers, the display would only see the silence: tell it at once.
+static void dl_state_change (sys_state_t state)
+{
+    if(on_state_change)
+        on_state_change(state);
+
+    if(state == STATE_HOMING)
+        send_status(state);
+}
+
 static void dl_realtime (sys_state_t state)
 {
     uint32_t now = hal.get_elapsed_ticks();
@@ -1046,6 +1057,9 @@ void display_link_init (void)
 
     on_execute_realtime = grbl.on_execute_realtime;
     grbl.on_execute_realtime = dl_realtime;
+
+    on_state_change = grbl.on_state_change;
+    grbl.on_state_change = dl_state_change;
 
 #if DISPLAY_LINK_SENDER_STREAM != 255
     sender = stream_open_instance(DISPLAY_LINK_SENDER_STREAM, DISPLAY_LINK_SENDER_BAUD, sender_drop, "WiFi sender");
