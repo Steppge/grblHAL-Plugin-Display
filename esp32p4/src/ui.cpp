@@ -21,6 +21,7 @@
 #include "display.h"
 #include "usb_link.h"
 #include "deck.h"
+#include "battery.h"
 
 #define LONG_PRESS_MS       600     // buttons that move the machine or change offsets
 #define FORCE_UNLOCK_MS    3000     // unlock without homing ($22 override locks)
@@ -91,7 +92,7 @@ static lv_obj_t *scr_obj[S_Count];
 
 // top bar
 static ui_btn_t *b_menu, *b_mode;
-static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link, *lbl_clock, *lbl_bt;
+static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link, *lbl_clock, *lbl_bt, *lbl_batt;
 
 // main
 static lv_obj_t *map_card, *map_canvas, *map_name, *dro_card, *dro_val[3], *dro_mach[3];
@@ -630,6 +631,7 @@ static void screen_show (screen_t s)
     show(lbl_wifi, top);
     show(lbl_clock, top);
     show(lbl_bt, top);
+    show(lbl_batt, top);
     if(s == S_Main)
         btn_set(b_menu, LV_SYMBOL_LIST, NULL, 0, 0, A_Menu);
     else
@@ -787,13 +789,11 @@ static void layout_main (void)
     float x0, y0, x1, y1;
     map_extent(&x0, &y0, &x1, &y1);
 
-    // the canvas keeps the aspect ratio of the machine area, the Z bar sits right of it
-    int aw = MAP_W - 12 - 34, ah = MAP_H - 12;
-    int w = aw, h = (int)lroundf(aw * (y1 - y0) / (x1 - x0));
-    if(h > ah) {
-        h = ah;
-        w = (int)lroundf(ah * (x1 - x0) / (y1 - y0));
-    }
+    // the canvas fills the card up to the Z bar; the machine area sits in the middle, the grid goes on
+    // outside of it (dimmer) to the edges
+    int aw = MAP_W - 24 - 34, ah = MAP_H - 24;     // 12 px from the card edge and from the Z bar
+    int w = aw, h = ah;
+    (void)x0; (void)y0; (void)x1; (void)y1;
     if(w == map_w && h == map_h)
         return;
 
@@ -802,8 +802,8 @@ static void layout_main (void)
     free(map_buf);
     map_buf = (uint16_t *)ps_malloc(w * h * 2);
     lv_canvas_set_buffer(map_canvas, map_buf, w, h, LV_COLOR_FORMAT_RGB565);
-    map_ox = 6 + (aw - w) / 2;
-    map_oy = 6 + (ah - h) / 2;
+    map_ox = 12;
+    map_oy = 12;
     lv_obj_set_pos(map_canvas, map_ox, map_oy);
     last_map = 0;
 }
@@ -829,10 +829,12 @@ static void build_topbar (lv_obj_t *s)
     b_mode = btn(s, 662, 6, 66, 46, 14, NULL, "PC", 0, 0, A_Mode);    // CNC <-> PC-Deck
     lbl_clock = label(s, &lv_font_montserrat_24, 0xEBEEFA, "");     // empty until the time is known
     lv_obj_set_style_text_align(lbl_clock, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_width(lbl_clock, 110);
-    lv_obj_set_pos(lbl_clock, 732, 15);
+    lv_obj_set_width(lbl_clock, 72);
+    lv_obj_set_pos(lbl_clock, 730, 15);
+    lbl_batt = label(s, &lv_font_montserrat_18, 0xEBEEFA, "");          // battery, empty without one
+    lv_obj_set_pos(lbl_batt, 808, 18);
     lbl_bt = label(s, &lv_font_montserrat_24, COL_Z, "");               // gamepad controller
-    lv_obj_set_pos(lbl_bt, 872, 15);
+    lv_obj_set_pos(lbl_bt, 884, 15);
     lbl_wifi = label(s, &lv_font_montserrat_24, 0x50506E, LV_SYMBOL_WIFI);
     lv_obj_set_pos(lbl_wifi, 912, 9);
     lv_obj_set_style_pad_all(lbl_wifi, 6, 0);
@@ -1236,6 +1238,31 @@ static void groups_fill (void)
         if(tap_valid()) {
             show(fw_box, true);
             lv_obj_move_foreground(fw_box);
+        }
+    }, LV_EVENT_CLICKED, NULL);
+
+    // dimming of this screen: Off, 1, 2, 5, 10, 30 minutes without a job, each tap the next
+    char dim[16];
+    if(deck_cnc_dim())
+        snprintf(dim, sizeof(dim), "%u min", deck_cnc_dim());
+    else
+        strcpy(dim, "Off");
+    lv_obj_t *dr = list_row(grp_list, "Dim display (no job running)", dim, false);
+    lv_obj_add_event_cb(dr, [](lv_event_t *e) {
+        static const uint8_t steps[] = { 0, 1, 2, 5, 10, 30 };
+        if(!tap_valid())
+            return;
+        int k = 0;
+        while(k < (int)sizeof(steps) - 1 && steps[k] != deck_cnc_dim())
+            k++;
+        uint8_t m = steps[(k + 1) % sizeof(steps)];
+        deck_set_cnc_dim(m);
+        lv_obj_t *v = lv_obj_get_child((lv_obj_t *)lv_event_get_target(e), 1);
+        if(v) {
+            if(m)
+                lv_label_set_text_fmt(v, "%u min", m);
+            else
+                lv_label_set_text(v, "Off");
         }
     }, LV_EVENT_CLICKED, NULL);
 
@@ -2168,6 +2195,17 @@ static void update_topbar (void)
     else
         *buf = '\0';
     set_text(lbl_clock, buf);
+
+    // battery: symbol and percent, orange below 20 %, red below 10 %
+    if(battery_present()) {
+        int p = battery_percent();
+        const char *sym = p >= 90 ? LV_SYMBOL_BATTERY_FULL : p >= 60 ? LV_SYMBOL_BATTERY_3 : p >= 35 ? LV_SYMBOL_BATTERY_2
+                        : p >= 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
+        snprintf(buf, sizeof(buf), "%s %d%%", sym, p);
+        set_text(lbl_batt, buf);
+        lv_obj_set_style_text_color(lbl_batt, C(p < 10 ? COL_RED1 : p < 20 ? COL_ORANGE1 : 0xEBEEFA), 0);
+    } else
+        set_text(lbl_batt, "");
 
     // Bluetooth symbol while a gamepad controller is connected, red with its buttons enabled (Options)
     bool pad = mc.online && (mc.gp_flags & GP_CONNECTED);

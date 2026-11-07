@@ -236,6 +236,7 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
     const uint16_t c_out = rgb565(COL_MAP_OUT), c_bg = rgb565(COL_MAP_BG);
     const uint16_t c_grid = rgb565(COL_MAP_GRID), c_grid2 = rgb565(COL_MAP_GRID2);
     const uint16_t c_work = rgb565(COL_MAP_WORK), c_todo = rgb565(COL_MAP_TODO), c_frame = rgb565(COL_MAP_FRAME);
+    const uint16_t c_out_grid = rgb565(mix(COL_MAP_OUT, COL_MAP_GRID, 0.5f));     // grid outside the machine area
     const float frame = 1.6f / v->scale;     // frame width, about 2 pixels
     uint16_t c_trace[16];
 
@@ -244,6 +245,8 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
 
     float step = 1.0f / v->scale, grid = fine_grid ? 10.0f : 50.0f;
     float span = burned && by1 > by0 ? by1 - by0 : 1.0f;
+    bool known = mc.info || mc.env_valid;   // machine size from the controller: frame and outside area,
+                                            // else only the grid (the 300 mm default would draw a wrong frame)
 
     for(int py = 0; py < v->h; py++) {
 #if MAP_Y_DOWN
@@ -265,20 +268,22 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
 #endif
             int pv = preview_at(mx, my);    // the preview is drawn even outside the machine area
 
-            if(mx < ex0 || mx > ex1 || my < ey0 || my > ey1) {
-                row[px] = pv == 1 ? c_todo : (pv == 0 ? c_work : c_out);
+            if(known && (mx < ex0 || mx > ex1 || my < ey0 || my > ey1)) {
+                bool gx = fmodf(fabsf(mx - ex0) + step / 2, grid) < step;
+                row[px] = pv == 1 ? c_todo : (pv == 0 ? c_work : (gx || gy ? c_out_grid : c_out));
                 continue;
             }
 
             int cx = (int)((mx - ex0) * TRACE_RES);
             bool hit = false;
+            bool inside = mx >= ex0 && mx <= ex1 && my >= ey0 && my <= ey1;
 
             // with fewer than one pixel per cell look at all cells under the pixel
             int n = step * TRACE_RES > 1.0f ? (int)(step * TRACE_RES) : 1;
             for(int j = 0; j < n && !hit; j++)
                 for(int i = 0; i < n && !hit; i++) {
                     int x = cx + i, y = cy + j;
-                    hit = x < tw && y < th && trace[y * tw + x];
+                    hit = inside && x >= 0 && y >= 0 && x < tw && y < th && trace[y * tw + x];
                 }
 
             if(hit)
@@ -287,11 +292,11 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
                 row[px] = c_todo;
             else if(pv == 0)
                 row[px] = c_work;
-            else if(mx - ex0 < frame || ex1 - mx < frame || my - ey0 < frame || ey1 - my < frame)
+            else if(known && (mx - ex0 < frame || ex1 - mx < frame || my - ey0 < frame || ey1 - my < frame))
                 row[px] = c_frame;
             else {
-                bool gx = fmodf(mx - ex0 + step / 2, grid) < step;
-                bool gx50 = fmodf(mx - ex0 + step / 2, 50.0f) < step;
+                bool gx = fmodf(fabsf(mx - ex0) + step / 2, grid) < step;
+                bool gx50 = fmodf(fabsf(mx - ex0) + step / 2, 50.0f) < step;
                 row[px] = (gx50 || gy50) && fine_grid ? c_grid2 : (gx || gy ? c_grid : c_bg);
             }
         }

@@ -31,6 +31,10 @@
 #define ENC_STEPS       4       // edges per detent
 #define ENC_REVERSE     0
 
+// Battery voltage (IP5306 battery in the housing): 1 MOhm from battery + / 1 MOhm to GND, 100 nF to GND,
+//   J7 pin 14 GPIO53 (ADC2, free: the WiFi runs on the ESP32-C6)
+#define PIN_BATT        53
+
 // Gamepad receiver (D1 Mini ESP32 in the display housing) on J7, passed through to USB channel 1:
 //   J7 pin 9 GPIO2 TX -> D1 IO16 (RX)    J7 pin 11 GPIO3 RX <- D1 IO17 (TX)    J7 pin 1 3.3 V -> D1 3V3, pin 7 GND
 // (J2 "UART1" would fit as well, but its RX pad is torn off on this board)

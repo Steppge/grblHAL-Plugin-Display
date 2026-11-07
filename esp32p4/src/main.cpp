@@ -14,6 +14,7 @@
 #include "usb_link.h"
 #include "sd_update.h"
 #include "deck.h"
+#include "battery.h"
 
 #define UI_MS   100     // ui_update() interval
 
@@ -30,7 +31,7 @@ static void ota_progress (unsigned pct)
 }
 
 // Settings over the serial console (lower case lines; the PC-Deck app sends upper case ones, see deck.cpp):
-//   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, status
+//   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status
 static void console (char *line)
 {
     {
@@ -52,8 +53,12 @@ static void console (char *line)
             wifi_set_web_mode((uint8_t)atoi(arg));
         else if(!strcmp(line, "wifi"))
             wifi_cfg.enabled = !strcmp(arg, "on");
+        else if(!strcmp(line, "batt")) {
+            battery_console(arg);
+            return;
+        }
         else if(strcmp(line, "status")) {
-            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, status");
+            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status");
             return;
         }
 
@@ -92,6 +97,7 @@ void setup (void)
     sd_update_check(disp != NULL);  // before WiFi: the card and the WiFi chip share the SDMMC host
 
     beep_begin();
+    battery_begin();
     link_begin();
     usb_link_begin();
     wifi_begin(ota_progress);       // before the user interface: the WiFi chip link needs internal DMA memory
@@ -108,6 +114,7 @@ void loop (void)
 
     link_poll();
     deck_poll();                    // also reads the console
+    battery_poll();
 
     // firmware updates only while the machine is idle, in alarm or not connected
     wifi_poll(!mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP)));

@@ -24,6 +24,7 @@
 #include "pins.h"
 #include "wlan.h"
 #include "display.h"
+#include "link.h"
 #include "deck.h"
 
 #define DECK_FW         "38"
@@ -166,6 +167,7 @@ static bool dimmed = false, wake_hold = false;
 static uint32_t enc_active = 0;
 static lv_obj_t *wake_obj, *clock_lbl, *date_lbl;
 static int clock_min = -1;
+static uint8_t cnc_dim_min = 0;     // CNC/laser screen: dim after this many minutes without a job, 0 = never
 
 // ---------------------------------------------------------------- helpers
 
@@ -631,8 +633,7 @@ static void wake_up (void)
     lv_obj_set_style_bg_opa(wake_obj, LV_OPA_TRANSP, 0);
     if(!wake_hold)
         lv_obj_add_flag(wake_obj, LV_OBJ_FLAG_HIDDEN);
-    if(mode_on)
-        display_backlight(bri_normal() * 100 / 255);
+    display_backlight(mode_on ? bri_normal() * 100 / 255 : 100);
 }
 
 static void draw_clock (void)
@@ -652,7 +653,7 @@ static void dim_down (void)
 {
     dimmed = true;
     display_backlight(max(1, dim_bri * 100 / 255));
-    bool clock = opt_clock && wifi_time_valid();
+    bool clock = (opt_clock || !mode_on) && wifi_time_valid();     // the CNC screen always shows the clock
     lv_obj_set_style_bg_opa(wake_obj, clock ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     lv_obj_update_flag(clock_lbl, LV_OBJ_FLAG_HIDDEN, !clock);
     lv_obj_update_flag(date_lbl, LV_OBJ_FLAG_HIDDEN, !clock);
@@ -677,14 +678,31 @@ static void wake_event (lv_event_t *e)
     }
 }
 
+// PC-Deck: after the time from the app. CNC/laser screen: after the time set on the display, only while
+// no job runs; a change of the machine state or of the connection wakes it and counts as use.
 static void dim_poll (void)
 {
-    if(!mode_on || !dim_ms) {
+    static uint32_t last_state = 0xFFFFFFFF;
+    static bool last_online = false;
+    uint32_t ms = mode_on ? dim_ms : (uint32_t)cnc_dim_min * 60000UL;
+
+    if(!mode_on) {
+        if(mc.state != last_state || mc.online != last_online) {
+            last_state = mc.state;
+            last_online = mc.online;
+            lv_display_trigger_activity(NULL);
+            wake_up();
+        }
+        bool quiet = !mc.online || mc.state == STATE_IDLE || (mc.state & (STATE_ALARM | STATE_ESTOP));
+        if(!quiet)
+            ms = 0;
+    }
+    if(!ms) {
         wake_up();
         return;
     }
     uint32_t idle = min(lv_display_get_inactive_time(NULL), millis() - enc_active);
-    if(!dimmed && !wake_hold && idle >= dim_ms)
+    if(!dimmed && !wake_hold && idle >= ms)
         dim_down();
     else if(dimmed && !lv_obj_has_flag(clock_lbl, LV_OBJ_FLAG_HIDDEN))
         draw_clock();
@@ -699,7 +717,7 @@ static void apply_opt (const char *line, bool save)
     dim_ms = sec > 0 ? (uint32_t)sec * 1000 : 0;
     dim_bri = constrain(bd, 1, 255);
     opt_clock = c;
-    if(dimmed) {
+    if(dimmed && mode_on) {
         if(!dim_ms)
             wake_up();
         else
@@ -1432,6 +1450,7 @@ void deck_begin (void (*console)(char *line))
     z_buf = (uint8_t *)ps_malloc(ICON_BYTES);
     blk = (uint8_t *)ps_malloc(4096);
 
+    cnc_dim_min = prefs.getUChar("cncdim", 0);
     String opt = prefs.getString("opt", "");
     if(opt.length())
         apply_opt(opt.c_str(), false);
@@ -1672,6 +1691,18 @@ void deck_set_mode (bool on)
         }
     }
     display_backlight(on ? bri_normal() * 100 / 255 : 100);
+}
+
+uint8_t deck_cnc_dim (void)
+{
+    return cnc_dim_min;
+}
+
+void deck_set_cnc_dim (uint8_t minutes)
+{
+    cnc_dim_min = minutes;
+    prefs.putUChar("cncdim", minutes);
+    lv_display_trigger_activity(NULL);
 }
 
 bool deck_mode (void)

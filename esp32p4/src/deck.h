@@ -11,4 +11,6 @@ void deck_poll (void);                  // protocol, network, encoder; from loop
 void deck_ui (lv_obj_t *root, int y);   // the deck page below the status bar, hidden
 void deck_set_mode (bool on);           // PC-Deck mode on/off (home network, deck page)
 bool deck_mode (void);
+uint8_t deck_cnc_dim (void);            // CNC/laser screen: dim (with the clock) after n minutes without a job
+void deck_set_cnc_dim (uint8_t minutes); // 0 = never, stored
 bool deck_app_connected (void);         // the PC-Deck app talks to the deck
