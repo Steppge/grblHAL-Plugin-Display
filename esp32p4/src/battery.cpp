@@ -29,7 +29,8 @@ void battery_begin (void)
     cal = prefs.getFloat("cal", 1.0f);
     if(cal < 0.5f || cal > 1.5f)
         cal = 1.0f;
-    analogSetPinAttenuation(PIN_BATT, ADC_11db);   // up to about 3.1 V at the pin, 4.2 V gives 2.1 V
+    // the default attenuation 11 dB measures up to about 3.1 V at the pin, 4.2 V gives 2.1 V
+    // (analogSetPinAttenuation() before the first reading only gives "Pin is not configured as analog channel")
     volts = measure();
     valid = true;
 }

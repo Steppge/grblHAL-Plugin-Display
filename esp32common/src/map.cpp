@@ -26,27 +26,6 @@ static uint16_t preview_seq = 0;
 static float wco_x (void) { return mc.mpos[0] - mc.wpos[0]; }
 static float wco_y (void) { return mc.mpos[1] - mc.wpos[1]; }
 
-// Preview bit at a machine position, -1 outside the preview area
-static int preview_at (float mx, float my)
-{
-    if(!preview.valid)
-        return -1;
-
-    float wx = mx - wco_x(), wy = my - wco_y();
-    if(wx < preview.x0 || wx > preview.x1 || wy < preview.y0 || wy > preview.y1)
-        return -1;
-
-    // same scale as on the controller (display_link.c, pass 1)
-    float dx = max(preview.x1 - preview.x0, 0.1f), dy = max(preview.y1 - preview.y0, 0.1f);
-    float s = min((PREVIEW_W_MAX - 1) / dx, (PREVIEW_H_MAX - 1) / dy);
-    int px = (int)((wx - preview.x0) * s), py = (int)((preview.y1 - wy) * s);
-
-    if(px < 0 || py < 0 || px >= preview.w || py >= preview.h)
-        return 0;
-
-    return (preview.bits[py * (preview.w / 8) + px / 8] >> (7 - (px & 7))) & 1;
-}
-
 // Machine area in machine coordinates. grblHAL usually has negative machine space (homing to
 // the max. end), the work envelope says so once homed, before that the position decides.
 void map_extent (float *x0, float *y0, float *x1, float *y1)
@@ -128,7 +107,7 @@ void map_record (void)
         return;
     last_update = mc.updated;
 
-    if(mc.info)
+    if(mc.info && !map_render_busy())  // a running render reads the trace, a new size waits for its end
         trace_alloc();
     if(trace == NULL)
         return;
@@ -244,7 +223,58 @@ static inline uint32_t mix (uint32_t a, uint32_t b, float t)
     return r;
 }
 
-void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
+#define RENDER_W_MAX    1024    // widest render (the zoom view, full screen)
+
+// grid and frame flags of one column or row, worked out once per render instead of for each pixel
+#define G_GRID      0x01    // grid line (10 or 50 mm)
+#define G_GRID50    0x02    // 50 mm line
+#define G_FRAME     0x04    // frame of the machine area
+#define G_OUT       0x08    // outside the machine area
+
+static float col_mx[RENDER_W_MAX];
+static int col_cx[RENDER_W_MAX];
+static uint8_t col_g[RENDER_W_MAX];
+
+static uint8_t grid_flags (float m, float e0, float e1, float step, float grid, float frame, bool known)
+{
+    uint8_t g = 0;
+    float d = fabsf(m - e0) + step / 2;
+
+    if(fmodf(d, grid) < step)
+        g |= G_GRID;
+    if(fmodf(d, 50.0f) < step)
+        g |= G_GRID50;
+    if(known && (m - e0 < frame || e1 - m < frame))
+        g |= G_FRAME;
+    if(known && (m < e0 || m > e1))
+        g |= G_OUT;
+
+    return g;
+}
+
+// Preview bit at a machine position, -1 outside the preview area; scale and offset once per render
+struct preview_map_t {
+    bool valid;
+    float wco_x, wco_y, s;
+};
+
+static inline int preview_bit (const preview_map_t *p, float mx, float my)
+{
+    if(!p->valid)
+        return -1;
+
+    float wx = mx - p->wco_x, wy = my - p->wco_y;
+    if(wx < preview.x0 || wx > preview.x1 || wy < preview.y0 || wy > preview.y1)
+        return -1;
+
+    int px = (int)((wx - preview.x0) * p->s), py = (int)((preview.y1 - wy) * p->s);
+    if(px < 0 || py < 0 || px >= preview.w || py >= preview.h)
+        return 0;
+
+    return (preview.bits[py * (preview.w / 8) + px / 8] >> (7 - (px & 7))) & 1;
+}
+
+static void render (uint16_t *buf, const map_view_t *v, bool fine_grid)
 {
     const uint16_t c_out = rgb565(COL_MAP_OUT), c_bg = rgb565(COL_MAP_BG);
     const uint16_t c_grid = rgb565(COL_MAP_GRID), c_grid2 = rgb565(COL_MAP_GRID2);
@@ -260,6 +290,27 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
     float span = burned && by1 > by0 ? by1 - by0 : 1.0f;
     bool known = mc.info || mc.env_valid;   // machine size from the controller: frame and outside area,
                                             // else only the grid (the 300 mm default would draw a wrong frame)
+    int w = min(v->w, RENDER_W_MAX);
+    // with fewer than one pixel per cell look at all cells under the pixel
+    int n = step * TRACE_RES > 1.0f ? (int)(step * TRACE_RES) : 1;
+
+    preview_map_t pm = { preview.valid, wco_x(), wco_y(), 0.0f };
+    if(pm.valid) {
+        // same scale as on the controller (display_link.c, pass 1)
+        float dx = max(preview.x1 - preview.x0, 0.1f), dy = max(preview.y1 - preview.y0, 0.1f);
+        pm.s = min((PREVIEW_W_MAX - 1) / dx, (PREVIEW_H_MAX - 1) / dy);
+    }
+
+    for(int px = 0; px < w; px++) {
+#if MAP_X_LEFT
+        float mx = v->x0 + (v->w - 1 - px) * step;
+#else
+        float mx = v->x0 + px * step;
+#endif
+        col_mx[px] = mx;
+        col_cx[px] = (int)((mx - ex0) * TRACE_RES);
+        col_g[px] = grid_flags(mx, ex0, ex1, step, grid, frame, known);
+    }
 
     for(int py = 0; py < v->h; py++) {
 #if MAP_Y_DOWN
@@ -268,36 +319,29 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
         float my = v->y0 + (v->h - 1 - py) * step;
 #endif
         int cy = (int)((my - ey0) * TRACE_RES);
-        bool gy = fmodf(fabsf(my - ey0) + step / 2, grid) < step;
-        bool gy50 = fmodf(fabsf(my - ey0) + step / 2, 50.0f) < step;
+        uint8_t gy = grid_flags(my, ey0, ey1, step, grid, frame, known);
+        bool row_in = !(gy & G_OUT);
         uint16_t tc = c_trace[constrain((int)((my - by0) / span * 15.0f), 0, 15)];
         uint16_t *row = buf + py * v->w;
 
-        for(int px = 0; px < v->w; px++) {
-#if MAP_X_LEFT
-            float mx = v->x0 + (v->w - 1 - px) * step;
-#else
-            float mx = v->x0 + px * step;
-#endif
-            int pv = preview_at(mx, my);    // the preview is drawn even outside the machine area
+        for(int px = 0; px < w; px++) {
+            uint8_t gx = col_g[px];
+            int pv = preview_bit(&pm, col_mx[px], my);    // the preview is drawn even outside the machine area
 
-            if(known && (mx < ex0 || mx > ex1 || my < ey0 || my > ey1)) {
-                bool gx = fmodf(fabsf(mx - ex0) + step / 2, grid) < step;
-                row[px] = pv == 1 ? c_todo : (pv == 0 ? c_work : (gx || gy ? c_out_grid : c_out));
+            if((gx | gy) & G_OUT) {
+                row[px] = pv == 1 ? c_todo : (pv == 0 ? c_work : ((gx | gy) & G_GRID ? c_out_grid : c_out));
                 continue;
             }
 
-            int cx = (int)((mx - ex0) * TRACE_RES);
             bool hit = false;
-            bool inside = mx >= ex0 && mx <= ex1 && my >= ey0 && my <= ey1;
-
-            // with fewer than one pixel per cell look at all cells under the pixel
-            int n = step * TRACE_RES > 1.0f ? (int)(step * TRACE_RES) : 1;
-            for(int j = 0; j < n && !hit; j++)
-                for(int i = 0; i < n && !hit; i++) {
-                    int x = cx + i, y = cy + j;
-                    hit = inside && x >= 0 && y >= 0 && x < tw && y < th && trace[y * tw + x];
-                }
+            if(row_in && trace) {
+                int cx = col_cx[px];
+                for(int j = 0; j < n && !hit; j++)
+                    for(int i = 0; i < n && !hit; i++) {
+                        int x = cx + i, y = cy + j;
+                        hit = x >= 0 && y >= 0 && x < tw && y < th && trace[y * tw + x];
+                    }
+            }
 
             if(hit)
                 row[px] = tc;
@@ -305,19 +349,16 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
                 row[px] = c_todo;
             else if(pv == 0)
                 row[px] = c_work;
-            else if(known && (mx - ex0 < frame || ex1 - mx < frame || my - ey0 < frame || ey1 - my < frame))
+            else if((gx | gy) & G_FRAME)
                 row[px] = c_frame;
-            else {
-                bool gx = fmodf(fabsf(mx - ex0) + step / 2, grid) < step;
-                bool gx50 = fmodf(fabsf(mx - ex0) + step / 2, 50.0f) < step;
-                row[px] = (gx50 || gy50) && fine_grid ? c_grid2 : (gx || gy ? c_grid : c_bg);
-            }
+            else
+                row[px] = ((gx | gy) & G_GRID50) && fine_grid ? c_grid2 : ((gx | gy) & G_GRID ? c_grid : c_bg);
         }
     }
 
     // G54 origin: red X and green Y arm
     int ox, oy;
-    float wx = mc.mpos[0] - mc.wpos[0], wy = mc.mpos[1] - mc.wpos[1];
+    float wx = wco_x(), wy = wco_y();
     int arm = fine_grid ? 26 : 14;
 
     if(map_to_px(v, wx, wy, &ox, &oy)) {
@@ -332,8 +373,129 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
             }
         }
     }
+}
 
+// what is drawn from now on: changes after this point lead to the next render
+static void render_begin (void)
+{
     rx = mc.mpos[0];
     ry = mc.mpos[1];
     changed = false;
+}
+
+void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
+{
+    render_begin();
+    render(buf, v, fine_grid);
+}
+
+// Background render
+
+static TaskHandle_t r_task = NULL;
+static volatile int r_state = 0;        // 0 idle, 1 running, 2 done
+static uint16_t *r_buf;
+static const uint16_t *r_shown;
+static map_view_t r_v;
+static map_area_t r_area;
+static bool r_fine;
+static int r_tag;
+
+// the smallest rectangle in which the new render differs from the shown one
+static void diff (const uint16_t *a, const uint16_t *b, int w, int h, map_area_t *r)
+{
+    r->x1 = w; r->y1 = h; r->x2 = -1; r->y2 = -1;
+
+    if(b == NULL) {
+        r->x1 = r->y1 = 0; r->x2 = w - 1; r->y2 = h - 1;
+        return;
+    }
+
+    for(int y = 0; y < h; y++) {
+        const uint16_t *ra = a + y * w, *rb = b + y * w;
+        if(!memcmp(ra, rb, w * 2))
+            continue;
+        if(y < r->y1)
+            r->y1 = y;
+        r->y2 = y;
+        int x = 0;
+        while(x < w && ra[x] == rb[x])
+            x++;
+        if(x < r->x1)
+            r->x1 = x;
+        x = w - 1;
+        while(x >= 0 && ra[x] == rb[x])
+            x--;
+        if(x > r->x2)
+            r->x2 = x;
+    }
+}
+
+static void render_job (void)
+{
+    uint32_t t = millis();
+    render(r_buf, &r_v, r_fine);
+    uint32_t t2 = millis();
+    diff(r_buf, r_shown, r_v.w, r_v.h, &r_area);
+    if(link_log)
+        Serial.printf("[%lu] map render %lu ms, diff %lu ms, changed %d x %d\n", (unsigned long)t,
+                      (unsigned long)(t2 - t), (unsigned long)(millis() - t2),
+                      r_area.x2 - r_area.x1 + 1, r_area.y2 - r_area.y1 + 1);
+}
+
+static void render_task (void *arg)
+{
+    for(;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        render_job();
+        __atomic_store_n(&r_state, 2, __ATOMIC_RELEASE);
+    }
+}
+
+bool map_render_start (uint16_t *buf, const uint16_t *shown, const map_view_t *v, bool fine_grid, int tag)
+{
+    if(__atomic_load_n(&r_state, __ATOMIC_ACQUIRE) != 0)
+        return false;
+
+    render_begin();
+    r_buf = buf;
+    r_shown = shown;
+    r_v = *v;
+    r_fine = fine_grid;
+    r_tag = tag;
+
+    // core 0 like the USB link task, that one has the higher priority
+    if(r_task == NULL && xTaskCreatePinnedToCore(render_task, "map", 4096, NULL, 1, &r_task, 0) != pdPASS) {
+        r_task = NULL;
+        render_job();       // no task: here and now
+        r_state = 2;
+        return true;
+    }
+
+    __atomic_store_n(&r_state, 1, __ATOMIC_RELEASE);
+    xTaskNotifyGive(r_task);
+
+    return true;
+}
+
+int map_render_done (map_view_t *v, map_area_t *changed_area)
+{
+    if(__atomic_load_n(&r_state, __ATOMIC_ACQUIRE) != 2)
+        return -1;
+
+    *v = r_v;
+    *changed_area = r_area;
+    __atomic_store_n(&r_state, 0, __ATOMIC_RELEASE);
+
+    return r_tag;
+}
+
+bool map_render_busy (void)
+{
+    return __atomic_load_n(&r_state, __ATOMIC_ACQUIRE) == 1;
+}
+
+void map_render_wait (void)
+{
+    while(map_render_busy())
+        delay(1);
 }

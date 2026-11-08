@@ -26,6 +26,8 @@
 #define LONG_PRESS_MS       600     // buttons that move the machine or change offsets
 #define FORCE_UNLOCK_MS    3000     // unlock without homing ($22 override locks)
 #define MAP_REDRAW_MS       300
+#define MAP_TAG_MAIN        0       // map_render_start() tags
+#define MAP_TAG_ZOOM        1
 #define PROBE_MAX_DIST     50.0f    // max. probing distance (mm), limited further by the work envelope
 #define PROBE_RETRACT       5.0f
 #define JOG_FEED          3000      // mm/min, grblHAL limits it to the axis max. rate
@@ -103,14 +105,14 @@ static ui_btn_t *b_step_main[5];
 static int map_ox = 6, map_oy = 6;     // canvas position in the map card
 static bool view_preview = false;       // map card shows the G-code preview instead of the machine area
 static uint16_t preview_seen = 0;
-static uint16_t *map_buf = NULL;
+static uint16_t *map_buf = NULL, *map_back = NULL;   // shown and rendered in the background (map_render_start())
 static int map_w = 0, map_h = 0;
 static map_view_t map_v;
 
 // zoom
 static lv_obj_t *zoom_canvas, *zoom_chip, *zoom_dot, *zoom_lbl, *ztool_h, *ztool_v, *ztool_c;
 static ui_btn_t *b_zback, *b_stop;
-static uint16_t *zoom_buf = NULL;
+static uint16_t *zoom_buf = NULL, *zoom_back = NULL;
 static map_view_t zoom_v;
 static bool stop_req = false, spindle_stop_sent = false;
 
@@ -799,8 +801,14 @@ static void layout_main (void)
 
     map_w = w;
     map_h = h;
+    map_view_t dummy;
+    map_area_t dummy_area;
+    map_render_wait();
+    map_render_done(&dummy, &dummy_area);        // a render into the old buffers is thrown away
     free(map_buf);
-    map_buf = (uint16_t *)ps_malloc(w * h * 2);
+    free(map_back);
+    map_buf = (uint16_t *)ps_calloc(w * h, 2);
+    map_back = (uint16_t *)ps_calloc(w * h, 2);
     lv_canvas_set_buffer(map_canvas, map_buf, w, h, LV_COLOR_FORMAT_RGB565);
     map_ox = 12;
     map_oy = 12;
@@ -941,7 +949,8 @@ static void build_main (lv_obj_t *s)
 
 static void build_zoom (lv_obj_t *s)
 {
-    zoom_buf = (uint16_t *)ps_malloc(SCR_W * SCR_H * 2);
+    zoom_buf = (uint16_t *)ps_calloc(SCR_W * SCR_H, 2);
+    zoom_back = (uint16_t *)ps_calloc(SCR_W * SCR_H, 2);
     zoom_canvas = lv_canvas_create(s);
     lv_canvas_set_buffer(zoom_canvas, zoom_buf, SCR_W, SCR_H, LV_COLOR_FORMAT_RGB565);
     lv_obj_set_pos(zoom_canvas, 0, 0);
@@ -2358,14 +2367,14 @@ static void update_main (void)
         set_text(map_name, pv ? preview.name : (preview.loading ? "Loading preview..." : (*sd_sel ? sd_sel : "")));
 
     layout_main();
-    if(map_buf && (map_changed() || !last_map) && millis() - last_map >= MAP_REDRAW_MS) {
+    if(map_back && (map_changed() || !last_map) && millis() - last_map >= MAP_REDRAW_MS && !map_render_busy()) {
+        map_view_t v;
         if(pv)
-            map_view_preview(&map_v, map_w, map_h);
+            map_view_preview(&v, map_w, map_h);
         else
-            map_view_full(&map_v, map_w, map_h);
-        map_render(map_buf, &map_v, pv);     // 10 mm grid in the preview, 50 mm for the whole machine
-        lv_obj_invalidate(map_canvas);
-        last_map = millis();
+            map_view_full(&v, map_w, map_h);
+        if(map_render_start(map_back, map_buf, &v, pv, MAP_TAG_MAIN))     // 10 mm grid in the preview, 50 mm for the whole machine
+            last_map = millis();
     }
     crosshair_move(&map_v, tool_h, tool_v, tool_c, map_ox, map_oy);
     zbar_update(&zbar_main);
@@ -2404,14 +2413,53 @@ static void update_zoom (void)
     b_stop->tap_on_press = true;
     set_text(zoom_lbl, buf);
 
-    if(zoom_buf && (map_changed() || map_zoom_moved() || !last_map) && millis() - last_map >= MAP_REDRAW_MS) {
-        map_view_zoom(&zoom_v, SCR_W, SCR_H);
-        map_render(zoom_buf, &zoom_v, true);
-        lv_obj_invalidate(zoom_canvas);
-        last_map = millis();
+    if(zoom_back && (map_changed() || map_zoom_moved() || !last_map) && millis() - last_map >= MAP_REDRAW_MS &&
+        !map_render_busy()) {
+        map_view_t v;
+        map_view_zoom(&v, SCR_W, SCR_H);
+        if(map_render_start(zoom_back, zoom_buf, &v, true, MAP_TAG_ZOOM))
+            last_map = millis();
     }
     crosshair_move(&zoom_v, ztool_h, ztool_v, ztool_c, 0, 0);
     zbar_update(&zbar_zoom);
+}
+
+// a finished background render: only the changed rectangle is copied to the shown buffer and drawn again
+static void map_apply (lv_obj_t *canvas, uint16_t *shown, const uint16_t *back, int w, const map_area_t *a)
+{
+    if(a->x2 < a->x1 || a->y2 < a->y1)
+        return;     // nothing changed
+
+    for(int y = a->y1; y <= a->y2; y++)
+        memcpy(shown + y * w + a->x1, back + y * w + a->x1, (a->x2 - a->x1 + 1) * 2);
+
+    lv_area_t c, r;
+    lv_obj_get_coords(canvas, &c);
+    r.x1 = c.x1 + a->x1; r.y1 = c.y1 + a->y1;
+    r.x2 = c.x1 + a->x2; r.y2 = c.y1 + a->y2;
+    lv_image_cache_drop(lv_image_get_src(canvas));
+    lv_obj_invalidate_area(canvas, &r);
+}
+
+static void map_swap (void)
+{
+    map_view_t v;
+    map_area_t a;
+
+    switch(map_render_done(&v, &a)) {
+        case MAP_TAG_MAIN:
+            map_v = v;
+            map_apply(map_canvas, map_buf, map_back, map_w, &a);
+            break;
+
+        case MAP_TAG_ZOOM:
+            zoom_v = v;
+            map_apply(zoom_canvas, zoom_buf, zoom_back, SCR_W, &a);
+            break;
+
+        default:
+            break;
+    }
 }
 
 static void update_screen (void)
@@ -2662,6 +2710,7 @@ void ui_update (void)
     map_record();
     probe_poll();
     update_topbar();
+    map_swap();
     update_screen();
 }
 
