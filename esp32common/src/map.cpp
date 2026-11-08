@@ -15,6 +15,8 @@ static float bx0, by0, bx1, by1;        // bounds of the burned area (mm)
 static bool burned = false, changed = true;
 static bool last_on = false;
 static float last_x, last_y;
+static float last_wx, last_wy;         // G54 origin of the last status line
+static float rx, ry;                    // tool position at the last render
 static uint32_t last_update = 0, last_state = STATE_IDLE;
 static uint16_t preview_seq = 0;
 
@@ -147,7 +149,18 @@ void map_record (void)
     last_on = on;
     last_x = x;
     last_y = y;
-    changed = true;     // the tool moves
+
+    // a new render only for new content: the trace or the G54 origin (the tool cross is its own object);
+    // a render takes about 200 ms and stops the status lines meanwhile
+    if(on || wco_x() != last_wx || wco_y() != last_wy)
+        changed = true;
+    last_wx = wco_x();
+    last_wy = wco_y();
+}
+
+bool map_zoom_moved (void)
+{
+    return !preview.valid && !burned && (mc.mpos[0] != rx || mc.mpos[1] != ry);
 }
 
 bool map_changed (void)
@@ -320,5 +333,7 @@ void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid)
         }
     }
 
+    rx = mc.mpos[0];
+    ry = mc.mpos[1];
     changed = false;
 }

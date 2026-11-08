@@ -2404,7 +2404,7 @@ static void update_zoom (void)
     b_stop->tap_on_press = true;
     set_text(zoom_lbl, buf);
 
-    if(zoom_buf && (map_changed() || !last_map) && millis() - last_map >= MAP_REDRAW_MS) {
+    if(zoom_buf && (map_changed() || map_zoom_moved() || !last_map) && millis() - last_map >= MAP_REDRAW_MS) {
         map_view_zoom(&zoom_v, SCR_W, SCR_H);
         map_render(zoom_buf, &zoom_v, true);
         lv_obj_invalidate(zoom_canvas);

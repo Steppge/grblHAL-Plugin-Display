@@ -73,6 +73,7 @@ struct machine_t {
     float s_max;            // spindle speed / laser power at 100 %
     char job[48];           // name of the running SD job
     uint32_t updated;       // millis() of the last status line
+    uint32_t status_count;  // counts the status lines, the UI redraws on a change
     bool info;              // $DI has arrived
     char msg[64];           // last message from the controller
     uint16_t msg_seq;       // counts messages
@@ -161,3 +162,4 @@ void link_rt (uint8_t cmd);
 bool link_cmd (const char *line);   // queued, sent again until the controller has accepted it
 bool link_idle (void);              // all queued command lines have been accepted
 void link_send (const char *body);  // other requests: "FL", "LF,<pct>,<ms>"
+extern bool link_log;               // lines to the controller on the console (linklog on|off)

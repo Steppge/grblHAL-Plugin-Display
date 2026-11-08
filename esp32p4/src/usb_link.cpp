@@ -125,6 +125,14 @@ static void usb_task (void *arg)
 
         path = usb ? Path_Usb : net ? Path_Wifi : Path_None;
 
+        // link log: every change of the USB connection to the bridge (mounted = enumerated, open = DTR set)
+        static int last_usb = -1;
+        int now_usb = (tud_mounted() ? 1 : 0) | (tud_cdc_n_connected(CH_LINK) ? 2 : 0) | (net ? 4 : 0);
+        if(link_log && now_usb != last_usb)
+            Serial.printf("[%lu] usb: %s, link channel %s%s\n", (unsigned long)millis(), now_usb & 1 ? "mounted" : "NOT mounted",
+                          now_usb & 2 ? "open" : "closed", now_usb & 4 ? ", WiFi link" : "");
+        last_usb = now_usb;
+
         if(wifi != udp_open) {
             if(wifi)
                 udp.begin(BRIDGE_GAMEPAD_PORT);

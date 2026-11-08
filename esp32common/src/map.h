@@ -15,6 +15,7 @@ struct map_view_t {
 
 void map_init (void);
 void map_record (void);                 // call for each new status line
+bool map_zoom_moved (void);              // the empty zoom view follows the tool: it moved since the last render
 bool map_changed (void);                // something new to draw since the last render
 void map_extent (float *x0, float *y0, float *x1, float *y1);
 void map_view_full (map_view_t *v, int w, int h);

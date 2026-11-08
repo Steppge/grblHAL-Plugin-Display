@@ -53,6 +53,11 @@ static void console (char *line)
             wifi_set_web_mode((uint8_t)atoi(arg));
         else if(!strcmp(line, "wifi"))
             wifi_cfg.enabled = !strcmp(arg, "on");
+        else if(!strcmp(line, "linklog")) {
+            link_log = !strcmp(arg, "on");
+            Serial.printf("link log %s\n",link_log ? "on" : "off");
+            return;
+        }
         else if(!strcmp(line, "batt")) {
             battery_console(arg);
             return;
@@ -112,6 +117,7 @@ void loop (void)
 {
     static uint32_t last_ui = 0;
 
+    uint32_t t0 = millis();
     link_poll();
     deck_poll();                    // also reads the console
     battery_poll();
@@ -127,11 +133,23 @@ void loop (void)
         usb_seen = millis();
     wifi_machine_allowed(millis() - usb_seen > 300);
 
-    if(millis() - last_ui >= UI_MS) {
+    static int last_wifi = -1;      // for the link log: WiFi state changes
+    if(link_log && (int)wifi_state() != last_wifi) {
+        last_wifi = (int)wifi_state();
+        Serial.printf("[%lu] wifi state %d, IP %s\n",(unsigned long)millis(), last_wifi, wifi_ip());
+    }
+
+    // redraw as soon as a status line came in, so the position follows the controller's timing;
+    // without status lines every UI_MS
+    static uint32_t last_count = 0;
+    if(mc.status_count != last_count || millis() - last_ui >= UI_MS) {
+        last_count = mc.status_count;
         last_ui = millis();
         ui_update();
     }
 
     lv_timer_handler();
+    if(link_log && millis() - t0 > 40)     // for the link log: a slow loop holds the status lines back
+        Serial.printf("[%lu] slow loop %lu ms\n", (unsigned long)t0, (unsigned long)(millis() - t0));
     delay(2);
 }

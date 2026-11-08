@@ -27,6 +27,7 @@ static uint8_t q_head = 0, q_count = 0, q_tries = 0;
 static uint16_t next_id = 1;
 static uint32_t q_sent = 0, q_wait = 0;
 static bool q_await = false;
+bool link_log = false;          // console "linklog on": every line to the controller (but HB) on the console
 
 void link_send (const char *body)
 {
@@ -38,6 +39,8 @@ void link_send (const char *body)
 
     snprintf(line, sizeof(line), ">%s*%02X\n", body, sum);
     port->write(line);
+    if(link_log && strcmp(body, "HB"))
+        Serial.printf("[%lu] link> %s\n", (unsigned long)millis(), body);
 }
 
 void link_rt (uint8_t cmd)
@@ -138,7 +141,13 @@ static void handle_status (const char *args)
     mc.pct = pct;
     mc.mode = mode;
     mc.wcs = wcs;
-    mc.updated = millis();
+    uint32_t now = millis();
+    if(link_log)
+        Serial.printf("[%lu] status +%lu ms\n",(unsigned long)now, (unsigned long)(now - mc.updated));
+    mc.updated = now;
+    mc.status_count++;
+    if(!mc.online && link_log)
+        Serial.printf("[%lu] link: online\n",(unsigned long)mc.updated);
     mc.online = true;
 }
 
@@ -235,6 +244,8 @@ static void handle_line (char *line)
         strlcpy(mc.job, line + 3, sizeof(mc.job));
     else if(!strncmp(line, "BW,", 3)) {
         // Octopus-Bridge: name and password of its machine network, sent over the USB cable
+        if(link_log)
+            Serial.printf("[%lu] link: bridge pairing line (bridge (re)connected)\n", (unsigned long)millis());
         char *pass = strchr(line + 3, ',');
         if(pass) {
             *pass++ = '\0';
@@ -333,6 +344,8 @@ void link_begin (void)
 
 void link_use (Stream *s)
 {
+    if(link_log)
+        Serial.printf("[%lu] link: transport %s\n", (unsigned long)millis(), s ? "USB/WiFi" : "UART");
     port = s ? s : &uart;
 }
 
@@ -359,6 +372,8 @@ void link_poll (void)
     uint32_t now = millis();    // after reading, a status line just received is not older than now
 
     if(mc.online && now - mc.updated > LINK_TIMEOUT_MS) {
+        if(link_log)
+            Serial.printf("[%lu] link: offline\n", (unsigned long)now);
         mc.online = false;
         mc.gp_flags = mc.gp_pair = 0;
     }
