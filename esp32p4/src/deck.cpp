@@ -920,6 +920,8 @@ static void encoder_poll (void)
             sw_down = false;
             if(report && !sw_turned)
                 io->println(now - sw_since >= KNOB_LONG_MS ? "KNOBLONG" : "KNOB");
+            else if(!mode_on && !sw_turned && now - sw_since < KNOB_LONG_MS)
+                link_rt(CMD_OVR_FEED_RESET);        // CNC: short press, feed override back to 100 %
         }
     }
 
@@ -944,6 +946,13 @@ static void encoder_poll (void)
         sw_turned = true;       // turned while pressed: the release is not a press
     if(report)
         io->printf(sw_down ? "ROTP %+d\n" : "ROT %+d\n", (int)detents);
+    else if(!mode_on) {
+        // CNC: feed override, 1 % per detent, 10 % while pressed (grblHAL limits it to 10..200 %)
+        uint8_t cmd = sw_down ? (detents > 0 ? CMD_OVR_FEED_PLUS : CMD_OVR_FEED_MINUS)
+                              : (detents > 0 ? CMD_OVR_FEED_FINE_PLUS : CMD_OVR_FEED_FINE_MINUS);
+        for(int i = abs((int)detents); i > 0; i--)
+            link_rt(cmd);
+    }
 }
 
 // ---------------------------------------------------------------- protocol
