@@ -61,11 +61,11 @@ float battery_volts (void)
     return volts;
 }
 
-// Li-ion discharge curve under light load
+// Li-ion discharge curve under light load; a full cell off the charger reads about 4.17 V with the display on
 int battery_percent (void)
 {
-    static const float v_tab[] = { 3.30f, 3.40f, 3.50f, 3.60f, 3.70f, 3.80f, 3.90f, 4.00f, 4.10f, 4.20f };
-    static const uint8_t p_tab[] = { 0, 5, 10, 20, 35, 50, 65, 80, 90, 100 };
+    static const float v_tab[] = { 3.30f, 3.40f, 3.50f, 3.60f, 3.70f, 3.80f, 3.90f, 4.00f, 4.08f, 4.15f };
+    static const uint8_t p_tab[] = { 0, 5, 10, 20, 35, 50, 65, 80, 92, 100 };
     const int n = sizeof(p_tab);
 
     if(volts <= v_tab[0])

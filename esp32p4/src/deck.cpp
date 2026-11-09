@@ -26,6 +26,7 @@
 #include "display.h"
 #include "link.h"
 #include "deck.h"
+#include "battery.h"
 
 #define DECK_FW         "38"
 #define DECK_W          1024
@@ -72,6 +73,7 @@
 #define COL_ACCENT  0x5096FF
 #define COL_LONG    0xEB5050
 #define COL_WARN    0xF0BE3C
+#define COL_FULL    0x2CF086    // battery really full (the green of the CNC theme)
 
 #define LAYOUT_FILE "/deck_layout.txt"
 #define THEME_FILE  "/theme.txt"
@@ -165,8 +167,10 @@ static uint32_t dim_ms = 0;
 static uint8_t dim_bri = 25;
 static bool dimmed = false, wake_hold = false;
 static uint32_t enc_active = 0;
-static lv_obj_t *wake_obj, *clock_lbl, *date_lbl;
+static lv_obj_t *wake_obj, *clock_lbl, *date_lbl, *batt_lbl;
 static int clock_min = -1;
+static uint32_t batt_full_since = 0;    // dimmed at 100 % since (0: not), green after BATT_FULL_MS
+#define BATT_FULL_MS    (30 * 60000UL)
 static uint8_t cnc_dim_min = 0;     // CNC/laser screen: dim after this many minutes without a job, 0 = never
 
 // ---------------------------------------------------------------- helpers
@@ -630,6 +634,8 @@ static void wake_up (void)
     dimmed = false;
     lv_obj_add_flag(clock_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(date_lbl, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(batt_lbl, LV_OBJ_FLAG_HIDDEN);
+    batt_full_since = 0;
     lv_obj_set_style_bg_opa(wake_obj, LV_OPA_TRANSP, 0);
     if(!wake_hold)
         lv_obj_add_flag(wake_obj, LV_OBJ_FLAG_HIDDEN);
@@ -647,6 +653,23 @@ static void draw_clock (void)
     static const char *days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
     lv_label_set_text_fmt(clock_lbl, "%02d:%02d", t.tm_hour, t.tm_min);
     lv_label_set_text_fmt(date_lbl, "%s  %02d.%02d.%04d", days[t.tm_wday], t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
+
+    // battery at the place of the status bar one, grey; green when dimmed at 100 % for 30 min
+    if(!battery_present()) {
+        lv_label_set_text(batt_lbl, "");
+        batt_full_since = 0;
+        return;
+    }
+    int p = battery_percent();
+    if(p < 100)
+        batt_full_since = 0;
+    else if(!batt_full_since)
+        batt_full_since = millis() | 1;
+    const char *sym = p >= 90 ? LV_SYMBOL_BATTERY_FULL : p >= 60 ? LV_SYMBOL_BATTERY_3 : p >= 35 ? LV_SYMBOL_BATTERY_2
+                    : p >= 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
+    lv_label_set_text_fmt(batt_lbl, "%s %d%%", sym, p);
+    bool full = batt_full_since && millis() - batt_full_since >= BATT_FULL_MS;
+    lv_obj_set_style_text_color(batt_lbl, lv_color_hex(full ? COL_FULL : COL_DIM), 0);
 }
 
 static void dim_down (void)
@@ -657,6 +680,7 @@ static void dim_down (void)
     lv_obj_set_style_bg_opa(wake_obj, clock ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     lv_obj_update_flag(clock_lbl, LV_OBJ_FLAG_HIDDEN, !clock);
     lv_obj_update_flag(date_lbl, LV_OBJ_FLAG_HIDDEN, !clock);
+    lv_obj_update_flag(batt_lbl, LV_OBJ_FLAG_HIDDEN, !clock);
     clock_min = -1;
     if(clock)
         draw_clock();
@@ -1676,6 +1700,10 @@ void deck_ui (lv_obj_t *root, int y)
     lv_obj_align(clock_lbl, LV_ALIGN_CENTER, 0, -50);
     date_lbl = text(wake_obj, &lv_font_montserrat_32, COL_DIM, "");
     lv_obj_align(date_lbl, LV_ALIGN_CENTER, 0, 110);
+    batt_lbl = text(wake_obj, &lv_font_montserrat_18, COL_DIM, "");
+    lv_obj_set_style_text_align(batt_lbl, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_pos(batt_lbl, 808, 18);                         // like the battery in the CNC status bar
+    lv_obj_add_flag(batt_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(wake_obj, LV_OBJ_FLAG_HIDDEN);
 
     apply_theme();
