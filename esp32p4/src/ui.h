@@ -6,4 +6,5 @@ void ui_init (void);
 void ui_update (void);  // call every 100 ms
 void ui_ota_progress (unsigned pct);
 void ui_select_file (const char *name);     // load an SD file (preview, START), "" unloads
+void ui_set_deck_mode (bool on);            // like the PC/CNC key (console "mode pc|cnc")
 const char *ui_selected_file (void);

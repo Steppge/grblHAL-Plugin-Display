@@ -136,6 +136,7 @@ void setup (void)
     link_begin();
     ui_init();
     wifi_begin(ota_progress);
+    wifi_boot_done();               // WiFi connects last, some seconds after the rest is up
 }
 
 void loop (void)

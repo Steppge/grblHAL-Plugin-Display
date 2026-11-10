@@ -141,10 +141,7 @@ static void handle_status (const char *args)
     mc.pct = pct;
     mc.mode = mode;
     mc.wcs = wcs;
-    uint32_t now = millis();
-    if(link_log)
-        Serial.printf("[%lu] status +%lu ms\n",(unsigned long)now, (unsigned long)(now - mc.updated));
-    mc.updated = now;
+    mc.updated = millis();
     mc.status_count++;
     if(!mc.online && link_log)
         Serial.printf("[%lu] link: online\n",(unsigned long)mc.updated);

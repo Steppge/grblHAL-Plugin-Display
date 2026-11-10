@@ -95,6 +95,22 @@ static bool services = false;           // OTA, upload page and mDNS are running
 static char ip[16] = "";
 static void (*on_progress)(unsigned pct) = NULL;
 static bool scanning = false;
+
+// The WiFi chip needs a moment after a disconnect: with the co-processor of the ESP32-P4 a connection
+// started at once was sometimes lost, the display waited for ever. So it starts WIFI_SETTLE_MS later
+// (several restarts in a row, e.g. at boot, give one), and a try that hangs WIFI_RETRY_MS starts again.
+#define WIFI_SETTLE_MS  1000
+#define WIFI_RETRY_MS   15000
+// the first connection only comes when everything else runs, WIFI_BOOT_MS after the end of setup()
+#define WIFI_BOOT_MS    1000
+static bool begin_pending = false;
+static uint8_t fast_tries = 0;      // quick tries after a refused login (202)
+static uint32_t begin_at = 0, connecting_since = 0, boot_end = 0;
+
+void wifi_boot_done (void)
+{
+    boot_end = millis();
+}
 static int scan_n = 0;
 static char scan_ssid[WIFI_SCAN_MAX][33];
 static char host[33] = WIFI_HOST_DEFAULT;
@@ -323,6 +339,7 @@ static void start (void)
             }
         }
         state = Wifi_Off;
+        begin_pending = false;
         return;
     }
 
@@ -331,13 +348,22 @@ static void start (void)
         WiFi.disconnect();
     else
         WiFi.mode(WIFI_STA);
+    state = Wifi_Connecting;
+    fail_reason = 0;
+    scan_paused = false;
+    fast_tries = 0;
+    begin_pending = true;
+    begin_at = millis();
+}
+
+static void begin_now (void)
+{
+    begin_pending = false;
+    connecting_since = millis();
     WiFi.setHostname(host);
     WiFi.setSleep(false);       // short response times for the sender
     WiFi.setAutoReconnect(true);
     WiFi.begin(target_ssid(), target_pass());
-    state = Wifi_Connecting;
-    fail_reason = 0;
-    scan_paused = false;
 }
 
 // Board specific WiFi setup before the first use, e.g. the SDIO pins of an ESP32-C6 co-processor
@@ -397,6 +423,20 @@ void wifi_poll (bool updates_allowed)
     if(state == Wifi_Off)
         return;
 
+    if(scanning || scan_paused)
+        ;
+    else if(begin_pending) {
+        if(millis() - begin_at >= WIFI_SETTLE_MS && millis() >= boot_end + WIFI_BOOT_MS)
+            begin_now();
+        return;
+    } else if(state == Wifi_Connecting && millis() - connecting_since >= WIFI_RETRY_MS) {
+        Serial.printf("WiFi: no connection to '%s' after %u s, again\n", target_ssid(), WIFI_RETRY_MS / 1000);
+        WiFi.disconnect();
+        begin_pending = true;
+        begin_at = millis();
+        return;
+    }
+
     static uint8_t reported = 0;
     if(fail_reason != reported) {
         reported = fail_reason;
@@ -404,15 +444,28 @@ void wifi_poll (bool updates_allowed)
             Serial.printf("WiFi: no connection to '%s': %s (%u)\n", target_ssid(), wifi_fail_text(), reported);
     }
 
+    // the first login after a start is refused with 202 (auth fail) nearly every time, the next one works:
+    // again at once, twice at most (a really wrong password then waits WIFI_RETRY_MS)
+    if(state == Wifi_Connecting && !scanning && !scan_paused && fail_reason == 202 && fast_tries < 2) {
+        fast_tries++;
+        fail_reason = 0;
+        WiFi.disconnect();
+        begin_pending = true;
+        begin_at = millis();
+        return;
+    }
+
     if(WiFi.status() == WL_CONNECTED) {
         if(state != Wifi_Connected) {
             state = Wifi_Connected;
+            fast_tries = 0;
             fail_reason = 0;
             strlcpy(ip, WiFi.localIP().toString().c_str(), sizeof(ip));
             services_start();
         }
     } else if(state == Wifi_Connected) {
-        state = Wifi_Connecting;    // reconnects by itself
+        state = Wifi_Connecting;    // reconnects by itself, else again after WIFI_RETRY_MS
+        connecting_since = millis();
         services_stop();
     }
 
@@ -440,8 +493,8 @@ static void scan_done (void)
         WiFi.mode(WIFI_OFF);
     else if(scan_paused) {
         scan_paused = false;
-        WiFi.setAutoReconnect(true);
-        WiFi.begin(target_ssid(), target_pass());
+        begin_pending = true;
+        begin_at = millis();
     }
 }
 

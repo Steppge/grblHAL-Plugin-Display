@@ -2718,6 +2718,12 @@ void ui_update (void)
     update_screen();
 }
 
+void ui_set_deck_mode (bool on)
+{
+    if(on != deck_mode())
+        action_run(A_Mode, 0);
+}
+
 void ui_init (void)
 {
     prefs.begin("ui", false);

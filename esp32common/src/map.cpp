@@ -432,14 +432,8 @@ static void diff (const uint16_t *a, const uint16_t *b, int w, int h, map_area_t
 
 static void render_job (void)
 {
-    uint32_t t = millis();
     render(r_buf, &r_v, r_fine);
-    uint32_t t2 = millis();
     diff(r_buf, r_shown, r_v.w, r_v.h, &r_area);
-    if(link_log)
-        Serial.printf("[%lu] map render %lu ms, diff %lu ms, changed %d x %d\n", (unsigned long)t,
-                      (unsigned long)(t2 - t), (unsigned long)(millis() - t2),
-                      r_area.x2 - r_area.x1 + 1, r_area.y2 - r_area.y1 + 1);
 }
 
 static void render_task (void *arg)

@@ -58,6 +58,10 @@ static void console (char *line)
             Serial.printf("link log %s\n",link_log ? "on" : "off");
             return;
         }
+        else if(!strcmp(line, "mode")) {
+            ui_set_deck_mode(!strcmp(arg, "pc"));
+            return;
+        }
         else if(!strcmp(line, "batt")) {
             battery_console(arg);
             return;
@@ -67,7 +71,7 @@ static void console (char *line)
             return;
         }
         else if(strcmp(line, "status")) {
-            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, status");
+            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, status");
             return;
         }
 
@@ -115,13 +119,13 @@ void setup (void)
         ui_init();
     Serial.printf("free internal RAM %u bytes, PSRAM %u bytes\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    wifi_boot_done();               // WiFi connects last, some seconds after the rest is up
 }
 
 void loop (void)
 {
     static uint32_t last_ui = 0;
 
-    uint32_t t0 = millis();
     link_poll();
     deck_poll();                    // also reads the console
     battery_poll();
@@ -153,7 +157,5 @@ void loop (void)
     }
 
     lv_timer_handler();
-    if(link_log && millis() - t0 > 40)     // for the link log: a slow loop holds the status lines back
-        Serial.printf("[%lu] slow loop %lu ms\n", (unsigned long)t0, (unsigned long)(millis() - t0));
     delay(2);
 }
