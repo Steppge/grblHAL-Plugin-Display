@@ -829,18 +829,18 @@ static void build_topbar (lv_obj_t *s)
     lv_obj_center(pill_lbl);
 
     lbl_feed = label(s, &lv_font_montserrat_24, 0xEBEEFA, "F 0");
-    lv_obj_set_pos(lbl_feed, 310, 15);
+    lv_obj_set_pos(lbl_feed, 300, 15);
     lbl_pwr = label(s, &lv_font_montserrat_24, COL_PWR, "");
-    lv_obj_set_pos(lbl_pwr, 450, 15);
+    lv_obj_set_pos(lbl_pwr, 400, 15);
     lbl_wcs = label(s, &lv_font_montserrat_24, COL_WCS, "G54");
-    lv_obj_set_pos(lbl_wcs, 610, 15);
-    b_mode = btn(s, 662, 6, 66, 46, 14, NULL, "PC", 0, 0, A_Mode);    // CNC <-> PC-Deck
+    lv_obj_set_pos(lbl_wcs, 500, 15);
+    b_mode = btn(s, 556, 6, 66, 46, 14, NULL, "PC", 0, 0, A_Mode);    // CNC <-> PC-Deck
     lbl_clock = label(s, &lv_font_montserrat_24, 0xEBEEFA, "");     // empty until the time is known
     lv_obj_set_style_text_align(lbl_clock, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_width(lbl_clock, 72);
-    lv_obj_set_pos(lbl_clock, 730, 15);
-    lbl_batt = label(s, &lv_font_montserrat_18, 0xEBEEFA, "");          // battery, empty without one
-    lv_obj_set_pos(lbl_batt, 808, 18);
+    lv_obj_set_pos(lbl_clock, 630, 15);
+    lbl_batt = label(s, &lv_font_montserrat_18, 0xEBEEFA, "");          // battery and run time, empty without one
+    lv_obj_set_pos(lbl_batt, BATT_X, BATT_Y);
     lbl_bt = label(s, &lv_font_montserrat_24, COL_Z, "");               // gamepad controller
     lv_obj_set_pos(lbl_bt, 884, 15);
     lbl_wifi = label(s, &lv_font_montserrat_24, 0x50506E, LV_SYMBOL_WIFI);
@@ -2210,7 +2210,11 @@ static void update_topbar (void)
         int p = battery_percent();
         const char *sym = p >= 90 ? LV_SYMBOL_BATTERY_FULL : p >= 60 ? LV_SYMBOL_BATTERY_3 : p >= 35 ? LV_SYMBOL_BATTERY_2
                         : p >= 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
-        snprintf(buf, sizeof(buf), "%s %d%%", sym, p);
+        int m = battery_minutes();
+        if(m >= 0)
+            snprintf(buf, sizeof(buf), "%s %d%%  %d:%02d", sym, p, m / 60, m % 60);
+        else
+            snprintf(buf, sizeof(buf), "%s %d%%", sym, p);
         set_text(lbl_batt, buf);
         lv_obj_set_style_text_color(lbl_batt, C(p < 10 ? COL_RED1 : p < 20 ? COL_ORANGE1 : 0xEBEEFA), 0);
     } else

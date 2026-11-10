@@ -667,7 +667,11 @@ static void draw_clock (void)
         batt_full_since = millis() | 1;
     const char *sym = p >= 90 ? LV_SYMBOL_BATTERY_FULL : p >= 60 ? LV_SYMBOL_BATTERY_3 : p >= 35 ? LV_SYMBOL_BATTERY_2
                     : p >= 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
-    lv_label_set_text_fmt(batt_lbl, "%s %d%%", sym, p);
+    int m = battery_minutes();
+    if(m >= 0)
+        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d:%02d", sym, p, m / 60, m % 60);
+    else
+        lv_label_set_text_fmt(batt_lbl, "%s %d%%", sym, p);
     bool full = batt_full_since && millis() - batt_full_since >= BATT_FULL_MS;
     lv_obj_set_style_text_color(batt_lbl, lv_color_hex(full ? COL_FULL : COL_DIM), 0);
 }
@@ -721,6 +725,8 @@ static void dim_poll (void)
         if(!quiet)
             ms = 0;
     }
+    if(battery_logging())       // discharge log: the same load all the time
+        ms = 0;
     if(!ms) {
         wake_up();
         return;
@@ -1702,7 +1708,7 @@ void deck_ui (lv_obj_t *root, int y)
     lv_obj_align(date_lbl, LV_ALIGN_CENTER, 0, 110);
     batt_lbl = text(wake_obj, &lv_font_montserrat_18, COL_DIM, "");
     lv_obj_set_style_text_align(batt_lbl, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(batt_lbl, 808, 18);                         // like the battery in the CNC status bar
+    lv_obj_set_pos(batt_lbl, BATT_X, BATT_Y);                  // like the battery in the CNC status bar
     lv_obj_add_flag(batt_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(wake_obj, LV_OBJ_FLAG_HIDDEN);
 

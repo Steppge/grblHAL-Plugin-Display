@@ -62,8 +62,12 @@ static void console (char *line)
             battery_console(arg);
             return;
         }
+        else if(!strcmp(line, "battlog")) {
+            battlog_console(arg);
+            return;
+        }
         else if(strcmp(line, "status")) {
-            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status");
+            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, status");
             return;
         }
 
