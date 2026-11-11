@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-#define BATT_FULL_V     4.19f   // discharging: 100 % from here on
+#define BATT_FULL_V     4.15f   // discharging: 100 % from here on
 #define BATT_CHARGE_V   4.20f   // above only on the charger
 #define BATT_CHARGED_V  4.20f  // charging: 100 % from here on (the charger stops), 99 % at most below
 #define BATT_GREEN_V    4.21f  // clock screen: green, really full
