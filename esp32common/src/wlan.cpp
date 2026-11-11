@@ -119,11 +119,15 @@ static char m_ssid[33] = "", m_pass[65] = "";      // machine network of the Oct
 static bool home_mode = false;      // in the network of wifi_cfg although paired: firmware update
 static bool machine_ok = true;      // the display is not on the USB cable of the bridge
 static bool deck_mode = false;      // PC-Deck mode: only the home network, also with "Home: Off"
+// After a start the home network first, for the time (the machine network has no internet, the board no
+// clock): until the time is set, at most TIME_BOOT_MS after setup(), then the machine network.
+#define TIME_BOOT_MS    10000
+static bool time_boot = false;
 
 // the machine network is used when paired, without the USB cable, not for a firmware update and not as a PC-Deck
 static bool use_machine (void)
 {
-    return *m_ssid && machine_ok && !home_mode && !deck_mode;
+    return *m_ssid && machine_ok && !home_mode && !deck_mode && !time_boot;
 }
 
 #define TIME_TZ         "CET-1CEST,M3.5.0,M10.5.0/3"   // Germany, summer time
@@ -330,7 +334,7 @@ static void start (void)
     // the machine network of a bridge is on without the USB cable, wifi_cfg.enabled only switches the
     // home network; paired, the radio stays on (the co-processor of the ESP32-P4 does not like a quick
     // off and on, the cable may be pulled any moment)
-    if(!use_machine() && (!(wifi_cfg.enabled || deck_mode) || !*wifi_cfg.ssid)) {
+    if(!use_machine() && (!(wifi_cfg.enabled || deck_mode || time_boot) || !*wifi_cfg.ssid)) {
         if(board_ready) {
             if(*m_ssid)
                 WiFi.disconnect();
@@ -387,6 +391,7 @@ void wifi_begin (void (*progress)(unsigned pct))
     web_mode = prefs.getUChar("web", Web_View);
     if(!*host)
         strcpy(host, WIFI_HOST_DEFAULT);
+    time_boot = *m_ssid && *wifi_cfg.ssid;     // paired with a bridge and a home network known
 
     setenv("TZ", TIME_TZ, 1);       // local time also before the first sync
     tzset();
@@ -423,6 +428,15 @@ void wifi_poll (bool updates_allowed)
 {
     if(scan_print && scanning)
         wifi_scan_result();     // console "scan", also with WiFi off
+
+    // the time from the home network after a start, then on to the machine network
+    if(time_boot && boot_end && (wifi_time_valid() || millis() - boot_end > TIME_BOOT_MS)) {
+        time_boot = false;
+        Serial.printf("WiFi: time %s after %lu ms\n", wifi_time_valid() ? "set" : "not available", (unsigned long)(millis() - boot_end));
+        if(use_machine() || !(wifi_cfg.enabled || deck_mode))
+            start();
+        return;
+    }
 
     if(state == Wifi_Off)
         return;
