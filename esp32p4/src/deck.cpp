@@ -660,11 +660,11 @@ static void draw_clock (void)
     const char *sym = p >= 90 ? LV_SYMBOL_BATTERY_FULL : p >= 60 ? LV_SYMBOL_BATTERY_3 : p >= 35 ? LV_SYMBOL_BATTERY_2
                     : p >= 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
     int m = battery_minutes();
-    int cv = (int)(battery_volts() * 100.0f + 0.5f);   // the voltage too, only here on the clock screen
+    int mv = (int)(battery_volts() * 1000.0f + 0.5f);  // the voltage too, only here on the clock screen
     if(m >= 0)
-        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d,%02d V  %d:%02d", sym, p, cv / 100, cv % 100, m / 60, m % 60);
+        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d,%03dV  %d:%02d", sym, p, mv / 1000, mv % 1000, m / 60, m % 60);
     else
-        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d,%02d V", sym, p, cv / 100, cv % 100);
+        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d,%03dV", sym, p, mv / 1000, mv % 1000);
     bool full = battery_volts() >= BATT_GREEN_V;
     lv_obj_set_style_text_color(batt_lbl, lv_color_hex(full ? COL_FULL : COL_DIM), 0);
 }
