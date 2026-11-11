@@ -28,7 +28,7 @@
 #include "deck.h"
 #include "battery.h"
 
-#define DECK_FW         "38"
+#define DECK_FW         "40"
 #define DECK_W          1024
 #define DECK_H          600
 #define NET_PORT        5555
@@ -147,6 +147,10 @@ static int area_y, area_h;
 static int down_tile = -1, ask_tile = -1;
 static uint32_t down_since = 0;
 static bool long_sent = false, delete_armed = false;
+static bool dragging = false;           // long held stored tile is dragged to another place (MOVE, FW 40)
+static int drag_target = -1;            // place under the finger, framed also when empty
+static lv_point_t down_pt;
+static lv_obj_t *drag_box;              // accent frame on the target place
 static uint32_t osd_until = 0;
 static lv_obj_t *vol_box, *vol_slider, *vol_lbl;
 static int vol_sent = -1;
@@ -763,6 +767,38 @@ static void ask_delete (int i)
     lv_obj_move_foreground(ask_box);
 }
 
+// accent frame on place t of the grid, -1 = none
+static void drag_show (int t)
+{
+    if(t == drag_target)
+        return;
+    drag_target = t;
+    if(t < 0) {
+        lv_obj_add_flag(drag_box, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    int cols = max(g_cols, 1), rows = max(g_rows, 1);
+    int tw = (GRID_W - GAP * (cols + 1)) / cols, th = (grid_h() - GAP * (rows + 1)) / rows;
+    int c = t % cols, r = t / cols;
+    lv_obj_set_pos(drag_box, GAP + c * (tw + GAP), GAP + r * (th + GAP));
+    lv_obj_set_size(drag_box, tw, th);
+    lv_obj_remove_flag(drag_box, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(drag_box);
+}
+
+// place of the grid under the finger, -1 outside the grid (the page bar is no target)
+static int slot_under (const lv_point_t &p)
+{
+    lv_area_t g;
+    lv_obj_get_coords(grid, &g);
+    int x = p.x - g.x1, y = p.y - g.y1, w = lv_area_get_width(&g), h = lv_area_get_height(&g);
+    int cols = max(g_cols, 1), rows = max(g_rows, 1);
+    if(x < 0 || y < 0 || x >= w || y >= h)
+        return -1;
+    int t = (y * rows / h) * cols + x * cols / w;
+    return t < MAX_TILES ? t : -1;
+}
+
 static void tile_event (lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
@@ -771,10 +807,16 @@ static void tile_event (lv_event_t *e)
     if(!pc_ok() || ask_tile >= 0)
         return;
 
+    lv_point_t p = { 0, 0 };
+    if(lv_indev_active())
+        lv_indev_get_point(lv_indev_active(), &p);
+
     if(code == LV_EVENT_PRESSED) {
         down_tile = i;
         down_since = millis();
-        long_sent = delete_armed = false;
+        down_pt = p;
+        long_sent = delete_armed = dragging = false;
+        drag_show(-1);
         tile_frame(i, true, false);
     } else if(code == LV_EVENT_PRESSING && down_tile == i) {
         uint32_t held = millis() - down_since;
@@ -782,20 +824,37 @@ static void tile_event (lv_event_t *e)
             long_sent = true;
             tile_frame(i, true, true);
         }
-        if(!delete_armed && held >= DELETE_MS && find_tile(cur_page, i)) {
+        // from 0.6 s on and half a tile away: drag (stored tiles only, same page)
+        if(long_sent && find_tile(cur_page, i)) {
+            int cols = max(g_cols, 1), rows = max(g_rows, 1);
+            if(!dragging && (abs(p.x - down_pt.x) > GRID_W / cols / 2 || abs(p.y - down_pt.y) > grid_h() / rows / 2))
+                dragging = true;
+            if(dragging) {
+                int t = slot_under(p);
+                drag_show(t == i ? -1 : t);
+            }
+        }
+        if(!dragging && !delete_armed && held >= DELETE_MS && find_tile(cur_page, i)) {
             delete_armed = true;
             tile_frame(i, true, true);
             down_tile = -1;
             ask_delete(i);
         }
     } else if(code == LV_EVENT_RELEASED && down_tile == i) {
-        io->printf(long_sent ? "LONG %d %d\n" : "PRESS %d %d\n", cur_page, i);
+        if(dragging) {      // moved: the app swaps the tiles and sends both places again (TSET/TDEL)
+            int t = drag_target;
+            drag_show(-1);
+            if(t >= 0)
+                io->printf("MOVE %d %d %d\n", cur_page, i, t);
+        } else
+            io->printf(long_sent ? "LONG %d %d\n" : "PRESS %d %d\n", cur_page, i);
         down_tile = -1;
-        long_sent = false;
+        long_sent = dragging = false;
         tile_frame(i, false, false);
     } else if(code == LV_EVENT_PRESS_LOST && down_tile == i) {
         down_tile = -1;
-        long_sent = false;
+        long_sent = dragging = false;
+        drag_show(-1);
         tile_frame(i, false, false);
     }
 }
@@ -1576,6 +1635,7 @@ void deck_ui (lv_obj_t *root, int y)
     for(int i = 0; i < MAX_TILES; i++) {
         lv_obj_t *t = plain(grid, 0, 0, 100, 100, COL_TILE, 14);
         lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(t, LV_OBJ_FLAG_SCROLL_CHAIN);    // dragging a tile never scrolls a parent
         lv_obj_set_style_border_opa(t, LV_OPA_COVER, 0);
         lv_obj_add_event_cb(t, tile_event, LV_EVENT_ALL, (void *)(intptr_t)i);
         tile_obj[i] = t;
@@ -1608,6 +1668,16 @@ void deck_ui (lv_obj_t *root, int y)
         lv_label_set_long_mode(tile_lbl[i], LV_LABEL_LONG_DOT);
         lv_obj_add_flag(t, LV_OBJ_FLAG_HIDDEN);
     }
+
+    // target frame while a tile is dragged, also on an empty place
+    drag_box = lv_obj_create(grid);
+    lv_obj_remove_style_all(drag_box);
+    lv_obj_remove_flag(drag_box, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    lv_obj_set_style_radius(drag_box, 14, 0);
+    lv_obj_set_style_border_width(drag_box, 4, 0);
+    lv_obj_set_style_border_color(drag_box, lv_color_hex(COL_ACCENT), 0);
+    lv_obj_set_style_border_opa(drag_box, LV_OPA_COVER, 0);
+    lv_obj_add_flag(drag_box, LV_OBJ_FLAG_HIDDEN);
 
     nav = plain(page_obj, 0, area_h - NAV_H, GRID_W, NAV_H, COL_BG, 0);
     button(nav, GAP, 4, 160, NAV_H - 10, LV_SYMBOL_LEFT, nav_event, (void *)(intptr_t)-1);
