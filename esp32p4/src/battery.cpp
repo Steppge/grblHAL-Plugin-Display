@@ -134,12 +134,13 @@ float battery_volts (void)
     return volts;
 }
 
-// Remaining run time in percent, from the discharge log of 2026-11-10 (display on, not dimmed, 573 min
-// from 4.14 V off the charger to 3.0 V): the share of the time left at each voltage
+// Remaining run time in percent, from the discharge log of 2026-11-11 (CNC mode the whole time, display on,
+// not dimmed, 488 min from 4.23 V off the charger to 3.10 V): the share of the time left at each voltage.
+// From BATT_FULL_V on 100 %; the second run with mixed use gave the same shares.
 static float level (void)
 {
-    static const float v_tab[] = { 3.10f, 3.20f, 3.30f, 3.40f, 3.50f, 3.60f, 3.70f, 3.80f, 3.90f, 4.00f, 4.10f, 4.14f };
-    static const uint8_t p_tab[] = { 0, 1, 2, 6, 18, 34, 47, 60, 72, 85, 97, 100 };
+    static const float v_tab[] = { 3.10f, 3.20f, 3.30f, 3.40f, 3.50f, 3.60f, 3.70f, 3.80f, 3.90f, 4.00f, 4.10f, BATT_FULL_V };
+    static const uint8_t p_tab[] = { 0, 1, 2, 6, 19, 35, 46, 58, 71, 86, 97, 100 };
     const int n = sizeof(p_tab);
 
     if(volts <= v_tab[0])
@@ -151,50 +152,55 @@ static float level (void)
     return 100.0f;
 }
 
+static bool charging = false;
+
+// On the charger the voltage reads higher than without load: 100 % only from BATT_CHARGED_V on, 99 % at most below
 int battery_percent (void)
 {
-    return (int)(level() + 0.5f);
+    int p = (int)(level() + 0.5f);
+    if(charging && p > 99 && volts < BATT_CHARGED_V)
+        p = 99;
+    return p;
 }
 
-// Remaining minutes: from the drop of the last RATE_MIN minutes, before that from the logged run time.
-// -1 while the level rises (charging).
-#define RUN_MIN         573     // logged run time, display on
+// Remaining minutes: from the drop of the last RATE_MIN minutes, else (too short, or on the flat part at the
+// top) from the logged run time. -1 while charging.
+#define RUN_MIN         488     // logged run time in CNC mode, display on
 #define RATE_MIN        30      // minutes of history
 #define RATE_MIN_USED   20      // at least this many for the measured drop
 
-static float hist[RATE_MIN + 1];
+static float hist[RATE_MIN + 1];    // level once a minute
 static int hist_n = 0;
 static uint32_t hist_last = 0;
-static bool charging = false;
+static float v_prev = 0.0f;         // voltage a minute ago
 static int rises = 0;
 
-// once a minute. Charging: a jump of more than 5 % or a rise in 3 minutes in a row (a load step, such as
-// dimming, rises once only); it ends with a drop (charger off), then the history starts again.
+// once a minute. Charging: above BATT_CHARGE_V (only on the charger, a full cell off it drops below at once)
+// or a rise of the voltage in 3 minutes in a row (a load step, such as dimming, rises once only); it ends with
+// a drop (charger off), then the history starts again.
 static void hist_poll (void)
 {
     if(hist_n && millis() - hist_last < 60000UL)
         return;
     hist_last = millis();
-    float l = level();
     if(hist_n) {
-        float prev = hist[hist_n - 1];
-        rises = l > prev + 0.2f ? rises + 1 : 0;
-        // above 4.16 V only on the charger (a full cell off it reads 4.13..4.15 V)
-        if(!charging && (l > prev + 5.0f || rises >= 3 || volts > 4.16f))
+        rises = volts > v_prev + 0.003f ? rises + 1 : 0;
+        if(!charging && (rises >= 3 || volts > BATT_CHARGE_V))
             charging = true;
-        else if(charging && l < prev - 0.5f) {
+        else if(charging && volts < v_prev - 0.02f && volts <= BATT_CHARGE_V) {
             charging = false;
             rises = 0;
             hist_n = 0;
         }
     }
+    v_prev = volts;
     if(charging)
-        hist_n = 0;             // only the last value, for the drop at the end
+        hist_n = 0;             // only the last value
     if(hist_n == RATE_MIN + 1) {
         memmove(hist, hist + 1, RATE_MIN * sizeof(float));
         hist_n--;
     }
-    hist[hist_n++] = l;
+    hist[hist_n++] = level();
 }
 
 bool battery_charging (void)
@@ -207,15 +213,15 @@ int battery_minutes (void)
     if(charging)
         return -1;
     float l = level();
-    int mins = (int)(l * RUN_MIN / 100.0f);
-    if(hist_n > RATE_MIN_USED) {
+    float mins = l * RUN_MIN / 100.0f;
+    // the measured drop; not on the flat part at the top, and at most half again the logged time
+    // (the PC-Deck mode needs less)
+    if(hist_n > RATE_MIN_USED && l < 99.0f) {
         float drop = hist[0] - l;
         if(drop > 0.5f)
-            mins = (int)(l * (hist_n - 1) / drop);
-        else
-            mins = 5999;
+            mins = min(l * (hist_n - 1) / drop, mins * 1.5f);
     }
-    return min(mins, 5999);
+    return (int)mins;
 }
 
 void battery_console (const char *arg)

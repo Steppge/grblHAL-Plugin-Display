@@ -95,6 +95,7 @@ static bool services = false;           // OTA, upload page and mDNS are running
 static char ip[16] = "";
 static void (*on_progress)(unsigned pct) = NULL;
 static bool scanning = false;
+static bool scan_print = false;     // console "scan": print the result
 
 // The WiFi chip needs a moment after a disconnect: with the co-processor of the ESP32-P4 a connection
 // started at once was sometimes lost, the display waited for ever. So it starts WIFI_SETTLE_MS later
@@ -420,6 +421,9 @@ void wifi_apply (void)
 
 void wifi_poll (bool updates_allowed)
 {
+    if(scan_print && scanning)
+        wifi_scan_result();     // console "scan", also with WiFi off
+
     if(state == Wifi_Off)
         return;
 
@@ -540,6 +544,26 @@ int wifi_scan_result (void)
     scan_failed = n < 0;
     scan_n = 0;
 
+    // console "scan": every network found with channel and signal, then the networks per channel
+    if(scan_print && n > 0) {
+        uint8_t per_ch[15] = {0};
+        Serial.printf("WiFi scan: %d networks\n", n);
+        for(int i = 0; i < n; i++) {
+            int ch = WiFi.channel(i);
+            if(ch > 0 && ch < 15)
+                per_ch[ch]++;
+            String ssid = WiFi.SSID(i);
+            Serial.printf("  ch %2d  %4d dBm  %s\n", ch, (int)WiFi.RSSI(i), ssid.length() ? ssid.c_str() : "(hidden)");
+        }
+        Serial.print("  per channel:");
+        for(int ch = 1; ch < 15; ch++)
+            if(per_ch[ch])
+                Serial.printf(" %d:%u", ch, per_ch[ch]);
+        Serial.println();
+    } else if(scan_print)
+        Serial.println("WiFi scan: nothing found");
+    scan_print = false;
+
     // the results come sorted by signal strength, the same network may show up more than once
     for(int i = 0; i < n && scan_n < WIFI_SCAN_MAX; i++) {
         String ssid = WiFi.SSID(i);
@@ -572,6 +596,16 @@ const char *wifi_fail_text (void)
         default:
             snprintf(buf, sizeof(buf), "error %u", fail_reason);
             return buf;
+    }
+}
+
+void wifi_scan_console (void)
+{
+    scan_print = true;
+    wifi_scan_start();
+    if(scan_failed) {
+        scan_print = false;
+        Serial.println("WiFi scan: could not start");
     }
 }
 

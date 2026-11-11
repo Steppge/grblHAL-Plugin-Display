@@ -58,6 +58,10 @@ static void console (char *line)
             Serial.printf("link log %s\n",link_log ? "on" : "off");
             return;
         }
+        else if(!strcmp(line, "scan")) {
+            wifi_scan_console();
+            return;
+        }
         else if(!strcmp(line, "mode")) {
             ui_set_deck_mode(!strcmp(arg, "pc"));
             return;
@@ -71,7 +75,7 @@ static void console (char *line)
             return;
         }
         else if(strcmp(line, "status")) {
-            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, status");
+            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, scan, status");
             return;
         }
 

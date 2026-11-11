@@ -61,3 +61,4 @@ void wifi_scan_start (void);                // pauses a connection attempt meanw
 int wifi_scan_result (void);                // -1 while scanning, WIFI_SCAN_ERROR, else the number of networks found
 const char *wifi_fail_text (void);          // why the connection attempt fails, "" = no reason known
 const char *wifi_scan_ssid (int i);         // sorted by signal strength, no duplicates
+void wifi_scan_console (void);              // console "scan": prints every network with channel and signal

@@ -169,8 +169,6 @@ static bool dimmed = false, wake_hold = false;
 static uint32_t enc_active = 0;
 static lv_obj_t *wake_obj, *clock_lbl, *date_lbl, *batt_lbl;
 static int clock_min = -1;
-static uint32_t batt_full_since = 0;    // dimmed at 100 % since (0: not), green after BATT_FULL_MS
-#define BATT_FULL_MS    (30 * 60000UL)
 static uint8_t cnc_dim_min = 0;     // CNC/laser screen: dim after this many minutes without a job, 0 = never
 
 // ---------------------------------------------------------------- helpers
@@ -635,7 +633,6 @@ static void wake_up (void)
     lv_obj_add_flag(clock_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(date_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(batt_lbl, LV_OBJ_FLAG_HIDDEN);
-    batt_full_since = 0;
     lv_obj_set_style_bg_opa(wake_obj, LV_OPA_TRANSP, 0);
     if(!wake_hold)
         lv_obj_add_flag(wake_obj, LV_OBJ_FLAG_HIDDEN);
@@ -654,25 +651,21 @@ static void draw_clock (void)
     lv_label_set_text_fmt(clock_lbl, "%02d:%02d", t.tm_hour, t.tm_min);
     lv_label_set_text_fmt(date_lbl, "%s  %02d.%02d.%04d", days[t.tm_wday], t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
 
-    // battery at the place of the status bar one, grey; green when dimmed at 100 % for 30 min
+    // battery at the place of the status bar one, grey; green from BATT_GREEN_V on (really full)
     if(!battery_present()) {
         lv_label_set_text(batt_lbl, "");
-        batt_full_since = 0;
         return;
     }
     int p = battery_percent();
-    if(p < 100)
-        batt_full_since = 0;
-    else if(!batt_full_since)
-        batt_full_since = millis() | 1;
     const char *sym = p >= 90 ? LV_SYMBOL_BATTERY_FULL : p >= 60 ? LV_SYMBOL_BATTERY_3 : p >= 35 ? LV_SYMBOL_BATTERY_2
                     : p >= 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
     int m = battery_minutes();
+    int cv = (int)(battery_volts() * 100.0f + 0.5f);   // the voltage too, only here on the clock screen
     if(m >= 0)
-        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d:%02d", sym, p, m / 60, m % 60);
+        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d,%02d V  %d:%02d", sym, p, cv / 100, cv % 100, m / 60, m % 60);
     else
-        lv_label_set_text_fmt(batt_lbl, "%s %d%%", sym, p);
-    bool full = batt_full_since && millis() - batt_full_since >= BATT_FULL_MS;
+        lv_label_set_text_fmt(batt_lbl, "%s %d%%  %d,%02d V", sym, p, cv / 100, cv % 100);
+    bool full = battery_volts() >= BATT_GREEN_V;
     lv_obj_set_style_text_color(batt_lbl, lv_color_hex(full ? COL_FULL : COL_DIM), 0);
 }
 
