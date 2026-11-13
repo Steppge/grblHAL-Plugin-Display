@@ -677,7 +677,7 @@ static void dim_down (void)
 {
     dimmed = true;
     display_backlight(max(1, dim_bri * 100 / 255));
-    bool clock = (opt_clock || !mode_on) && wifi_time_valid();     // the CNC screen always shows the clock
+    bool clock = CLOCK && (opt_clock || !mode_on) && wifi_time_valid();     // the CNC screen always shows the clock
     lv_obj_set_style_bg_opa(wake_obj, clock ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     lv_obj_update_flag(clock_lbl, LV_OBJ_FLAG_HIDDEN, !clock);
     lv_obj_update_flag(date_lbl, LV_OBJ_FLAG_HIDDEN, !clock);
@@ -970,6 +970,8 @@ static void IRAM_ATTR enc_isr (void)
 
 static void encoder_begin (void)
 {
+    if(!ENCODER)
+        return;
     pinMode(PIN_ENC_A, INPUT_PULLUP);
     pinMode(PIN_ENC_B, INPUT_PULLUP);
     pinMode(PIN_ENC_SW, INPUT_PULLUP);
@@ -982,6 +984,8 @@ static void encoder_poll (void)
 {
     static bool sw_raw = false, sw_down = false, sw_turned = false;
     static uint32_t sw_change = 0, sw_since = 0, last_send = 0;
+    if(!ENCODER)
+        return;
     uint32_t now = millis();
     bool report = mode_on && pc_ok();
 
@@ -1400,6 +1404,8 @@ static void dispatch (char *line, bool net)
             console_cb(line);
         return;
     }
+    if(!BIGDECK)            // CNC only: the deck protocol is not answered
+        return;
     if(net) {
         io = &net_client;
         in = &net_client;
@@ -1436,6 +1442,8 @@ static void net_poll (void)
     static char buf[256];
     static size_t len = 0;
 
+    if(!BIGDECK)            // CNC only: no deck server in the home network
+        return;
     if(wifi_home_state() != Wifi_Connected) {
         if(net_started) {
             if(net_client)
@@ -1553,6 +1561,8 @@ void deck_begin (void (*console)(char *line))
         Serial.println("Big-Deck: no file system");
 
     encoder_begin();
+    if(!BIGDECK)
+        return;
     Serial.printf("Big-Deck %s, id %s, %s, layout %dx%d, %d pages\n", DECK_FW, deck_id.c_str(),
                   net_key.length() ? "paired" : "not paired", g_cols, g_rows, g_pages);
 }
@@ -1783,6 +1793,8 @@ void deck_ui (lv_obj_t *root, int y)
 
 void deck_set_mode (bool on)
 {
+    if(!BIGDECK)
+        on = false;
     if(on == mode_on)
         return;
     mode_on = on;

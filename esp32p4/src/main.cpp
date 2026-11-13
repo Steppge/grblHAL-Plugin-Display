@@ -31,7 +31,8 @@ static void ota_progress (unsigned pct)
 }
 
 // Settings over the serial console (lower case lines; the PC-Deck app sends upper case ones, see deck.cpp):
-//   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status
+//   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status,
+//   mode pc|cnc (only with BIGDECK 1)
 static void console (char *line)
 {
     {

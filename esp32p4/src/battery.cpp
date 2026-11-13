@@ -8,7 +8,6 @@
 
 #define BATT_MS         2000    // measuring interval
 #define BATT_SAMPLES    16      // readings averaged per measurement
-#define BATT_DIV        2.0f    // 1 MOhm / 1 MOhm
 #define BATT_MIN_V      1.0f    // below: no battery connected
 
 static Preferences prefs;
@@ -42,6 +41,8 @@ static float measure (void)
 
 void battery_begin (void)
 {
+    if(!BATTERY)            // no battery: battery_present() stays false
+        return;
     prefs.begin("battery", false);
     cal = prefs.getFloat("cal", 1.0f);
     if(cal < 0.5f || cal > 1.5f)
@@ -57,6 +58,8 @@ void battery_begin (void)
 void battery_poll (void)
 {
     static uint32_t last = 0;
+    if(!BATTERY)
+        return;
     if(millis() - last < BATT_MS)
         return;
     last = millis();
@@ -226,6 +229,10 @@ int battery_minutes (void)
 
 void battery_console (const char *arg)
 {
+    if(!BATTERY) {
+        Serial.println("no battery (BATTERY 0 in display_config.h)");
+        return;
+    }
     float want = atof(arg);
     if(*arg && want == 0.0f) {
         cal = 1.0f;

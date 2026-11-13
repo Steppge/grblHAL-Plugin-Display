@@ -5,6 +5,11 @@
 // PC-Deck mode: the display as a deck of the PC-Deck app (F:\VisualCode\PC-Deck), same line protocol as
 // Deck 1/2 over the console UART (USB-C "UART", CH340) and over the home network (TCP 5555, search UDP 5556).
 // The console is read here as well: lines starting with a lower case letter go to the console handler.
+//
+// BIGDECK 0 (display_config.h, default): CNC/laser display only. No PC key, no deck protocol and no network
+// deck; console, encoder (feed override), dimming and the clock stay. BIGDECK 1: with the PC-Deck mode.
+
+#include "display_config.h"
 
 void deck_begin (void (*console)(char *line));
 void deck_poll (void);                  // protocol, network, encoder; from loop()

@@ -164,20 +164,20 @@ static void usb_task (void *arg)
         }
 
         // gamepad: controller -> D1 Mini
-        if((n = tud_cdc_n_read(CH_GAMEPAD, buf, sizeof(buf))) > 0) {
+        if((n = tud_cdc_n_read(CH_GAMEPAD, buf, sizeof(buf))) > 0 && GAMEPAD) {
             gp_uart.write(buf, n);
             gp_to_d1 += n;
         }
         if(udp_open && udp.parsePacket() > 0) {
             int r = udp.read(buf, sizeof(buf));
-            if(r > 0) {
+            if(r > 0 && GAMEPAD) {
                 gp_uart.write(buf, r);
                 gp_to_d1 += r;
             }
         }
 
         // gamepad: D1 Mini -> controller, over WiFi one datagram per line
-        int avail = gp_uart.available();
+        int avail = GAMEPAD ? gp_uart.available() : 0;
         if(avail > 0) {
             n = gp_uart.read(buf, min((size_t)avail, sizeof(buf)));
             gp_from_d1 += n;
@@ -211,8 +211,10 @@ void usb_link_begin (void)
     rx_buf = xStreamBufferCreate(LINK_RX_BUF, 1);
     tx_buf = xStreamBufferCreate(LINK_TX_BUF, 1);
 
-    gp_uart.setRxBufferSize(2048);
-    gp_uart.begin(GAMEPAD_BAUD, SERIAL_8N1, PIN_GAMEPAD_RX, PIN_GAMEPAD_TX);
+    if(GAMEPAD) {
+        gp_uart.setRxBufferSize(2048);
+        gp_uart.begin(GAMEPAD_BAUD, SERIAL_8N1, PIN_GAMEPAD_RX, PIN_GAMEPAD_TX);
+    }
 
     tinyusb_enable_interface(USB_INTERFACE_CDC, TUD_CDC_DESC_LEN, cdc0_descriptor);
     tinyusb_enable_interface(USB_INTERFACE_CDC2, TUD_CDC_DESC_LEN, cdc1_descriptor);

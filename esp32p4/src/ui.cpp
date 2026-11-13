@@ -835,6 +835,8 @@ static void build_topbar (lv_obj_t *s)
     lbl_wcs = label(s, &lv_font_montserrat_24, COL_WCS, "G54");
     lv_obj_set_pos(lbl_wcs, 500, 15);
     b_mode = btn(s, 556, 6, 66, 46, 14, NULL, "PC", 0, 0, A_Mode);    // CNC <-> PC-Deck
+    if(!BIGDECK)
+        lv_obj_add_flag(b_mode->obj, LV_OBJ_FLAG_HIDDEN);           // CNC only: no PC-Deck mode
     lbl_clock = label(s, &lv_font_montserrat_24, 0xEBEEFA, "");     // empty until the time is known
     lv_obj_set_style_text_align(lbl_clock, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_width(lbl_clock, 72);
@@ -2199,7 +2201,7 @@ static void update_topbar (void)
     set_text(lbl_wcs, buf);
 
     time_t now = time(NULL);
-    if(wifi_time_valid())
+    if(CLOCK && wifi_time_valid())
         strftime(buf, sizeof(buf), "%H:%M", localtime(&now));
     else
         *buf = '\0';
@@ -2332,7 +2334,7 @@ static void update_main (void)
                 bool h = job_secs + left >= 3600;
                 duration(el, sizeof(el), job_secs, h);
                 duration(tot, sizeof(tot), job_secs + left, h);
-                if(wifi_time_valid()) {
+                if(CLOCK && wifi_time_valid()) {
                     time_t t = time(NULL) + left;
                     strftime(end, sizeof(end), "ends %H:%M", localtime(&t));
                 } else {
@@ -2720,7 +2722,7 @@ void ui_update (void)
 
 void ui_set_deck_mode (bool on)
 {
-    if(on != deck_mode())
+    if(BIGDECK && on != deck_mode())
         action_run(A_Mode, 0);
 }
 

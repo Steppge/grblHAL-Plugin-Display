@@ -1,2 +1,3 @@
 .pio/
 src/web_index.h
+src/my_display_config.h
