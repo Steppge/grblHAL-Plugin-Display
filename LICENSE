@@ -1,8 +1,8 @@
 ------------------------------------------------------------------------------
-COPYRIGHT NOTICE FOR grblHAL-Plugin-Gamepad:
+COPYRIGHT NOTICE FOR grblHAL-Plugin-Display:
 ------------------------------------------------------------------------------
 
-grblHAL-Plugin-Gamepad - Bluetooth gamepad and analog joystick jogging for grblHAL
+grblHAL-Plugin-Display - touch display for grblHAL CNC and laser machines
 
 Copyright (c) 2026 Steppge
 

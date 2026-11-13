@@ -208,8 +208,9 @@ P4 display ==USB cable or WiFi==> ESP32-S3 bridge -UART-> grblHAL board (display
 
 The display's USB-C socket "USB 2.0" goes to the "USB" socket of the bridge. Without the cable the display
 connects to a hidden WiFi network of the bridge; the network name and password are passed over the cable on
-every plug-in, nobody types them. The bridge firmware is a separate project (Octopus-Bridge, ESP-IDF).
-Both UARTs run at 921600 baud: set `DISPLAY_LINK_BAUD` (and `GAMEPAD_BAUD`) to 921600 in `my_machine.h`.
+every plug-in, nobody types them. Bridge firmware and wiring:
+[Steppge/grblHAL-Octopus-Bridge](https://github.com/Steppge/grblHAL-Octopus-Bridge) (ESP-IDF).
+In `my_machine.h`: `DISPLAY_LINK_BAUD 921600` and, with the gamepad, `GAMEPAD_BAUD 230400`.
 
 ### Settings: `esp32p4/src/display_config.h`
 

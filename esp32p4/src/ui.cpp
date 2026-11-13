@@ -634,6 +634,7 @@ static void screen_show (screen_t s)
     show(lbl_clock, top);
     show(lbl_bt, top);
     show(lbl_batt, top);
+    show(b_mode->obj, top && BIGDECK);
     if(s == S_Main)
         btn_set(b_menu, LV_SYMBOL_LIST, NULL, 0, 0, A_Menu);
     else
