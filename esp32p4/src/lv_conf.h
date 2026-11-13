@@ -33,6 +33,7 @@
 #define LV_FONT_DEFAULT         &lv_font_montserrat_18
 
 #define LV_USE_CANVAS           1
+#define LV_USE_SNAPSHOT         1       // console "shot": screen image for the documentation
 #define LV_USE_THEME_DEFAULT    1
 #define LV_THEME_DEFAULT_DARK   1
 

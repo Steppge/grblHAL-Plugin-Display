@@ -174,6 +174,18 @@ Supply: 5 V from the controller board (e.g. EXP1 5V/GND of the Octopus) to 5Vin 
 The same functions on a 9" screen with more room: larger map, X/Y/Z, job line with elapsed time and job end,
 settings and SD card lists, firmware update from the display.
 
+| | |
+|---|---|
+| ![Main screen with the G-code preview](docs/p4_main.png) | ![A job running: live trace, overrides, job end](docs/p4_job.png) |
+| Main screen, G-code preview of the loaded file | Job running: live trace, feed/power overrides, elapsed time and job end |
+| ![Map full screen with STOP](docs/p4_zoom.png) | ![Menu](docs/p4_menu.png) |
+| Map full screen with STOP | Menu |
+| ![Settings](docs/p4_settings.png) | |
+| Settings: display options and the grblHAL setting groups | |
+
+The images come from the display itself: the console command `shot` sends the screen to the PC,
+`esp32p4/tools/shot.py <port> <file.png>` saves it (needs pyserial and Pillow, about 25 s per image).
+
 ### Parts
 
 | Part | |

@@ -30,9 +30,39 @@ static void ota_progress (unsigned pct)
     lv_refr_now(NULL);
 }
 
+// Console "shot": the screen as raw RGB565 (little endian) over the console, for tools/shot.py.
+// "SHOT <w> <h> <bytes>\n", the pixel data, "\nSHOTEND\n". Blocks the main loop for about 14 s at 921600 baud.
+static void shot (void)
+{
+    lv_obj_t *scr = lv_screen_active();
+    int32_t w = lv_obj_get_width(scr), h = lv_obj_get_height(scr);
+    uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
+    uint32_t size = stride * h;
+    uint8_t *mem = (uint8_t *)heap_caps_aligned_alloc(64, size, MALLOC_CAP_SPIRAM);
+    lv_draw_buf_t db;
+
+    if(!mem) {
+        Serial.println("shot: no memory");
+        return;
+    }
+    lv_draw_buf_init(&db, w, h, LV_COLOR_FORMAT_RGB565, stride, mem, size);
+    if(lv_snapshot_take_to_draw_buf(scr, LV_COLOR_FORMAT_RGB565, &db) != LV_RESULT_OK)
+        Serial.println("shot: failed");
+    else {
+        Serial.printf("SHOT %ld %ld %lu\n", (long)w, (long)h, (unsigned long)size);
+        for(uint32_t i = 0; i < size; i += 4096) {
+            Serial.write(mem + i, min((uint32_t)4096, size - i));
+            delay(1);
+        }
+        Serial.flush();
+        Serial.print("\nSHOTEND\n");
+    }
+    heap_caps_free(mem);
+}
+
 // Settings over the serial console (lower case lines; the PC-Deck app sends upper case ones, see deck.cpp):
 //   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status,
-//   mode pc|cnc (only with BIGDECK 1)
+//   mode pc|cnc (only with BIGDECK 1), shot (screen image, see tools/shot.py)
 static void console (char *line)
 {
     {
@@ -75,8 +105,12 @@ static void console (char *line)
             battlog_console(arg);
             return;
         }
+        else if(!strcmp(line, "shot")) {
+            shot();
+            return;
+        }
         else if(strcmp(line, "status")) {
-            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, scan, status");
+            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, scan, shot, status");
             return;
         }
 
