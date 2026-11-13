@@ -1,7 +1,10 @@
 # grblHAL-Plugin-Display
 
-A touch display for a [grblHAL](https://github.com/grblHAL) CNC or laser machine: an **ESP32-S3** drives an
-**MKS TS35** (3.5", 480x320, ST7796 + XPT2046 resistive touch) and talks to the grblHAL board over a UART.
+A touch display for a [grblHAL](https://github.com/grblHAL) CNC or laser machine, in two variants:
+
+- **ESP32-S3 + MKS TS35** (3.5", 480x320, ST7796 + XPT2046 resistive touch), talks to the grblHAL board over a UART.
+- **Elecrow CrowPanel Advanced 9" ESP32-P4** (1024x600, capacitive touch), connected over USB or WiFi through a
+  small ESP32-S3 bridge at the controller, see [CrowPanel 9" ESP32-P4](#crowpanel-9-esp32-p4).
 
 The display shows the machine state, the position and a map of the machine area with the live tool path and a
 **preview of the G-code file** to be run from the SD card. It starts and stops jobs, jogs, probes Z, fires laser
@@ -22,6 +25,9 @@ The plugin only uses grblHAL core APIs and is not tied to a driver or MCU.
 | [`my_plugin.c.example`](my_plugin.c.example) | Starts the plugin from `my_plugin_init()` |
 | [`esp32s3/`](esp32s3/) | ESP32-S3 firmware (PlatformIO, Arduino, LovyanGFX, LVGL 9) |
 | [`esp32s3/web/`](esp32s3/web/) | Web interface (one HTML page, embedded into the firmware) |
+| [`esp32p4/`](esp32p4/) | ESP32-P4 firmware for the CrowPanel 9" (PlatformIO, Arduino, LVGL 9) |
+| [`esp32p4/case/`](esp32p4/case/) | Housing for the CrowPanel 9" (STEP and STL) |
+| [`esp32common/`](esp32common/) | Code shared by both firmwares: link, WiFi, web interface, map |
 
 ## Screens
 
@@ -162,6 +168,65 @@ Supply: 5 V from the controller board (e.g. EXP1 5V/GND of the Octopus) to 5Vin 
 - With the beeper on GPIO15 the USB connection of the ESP32-S3 board dropped out now and then, on GPIO7 it is stable.
 - Map orientation: `MAP_X_LEFT` and `MAP_Y_DOWN` in `esp32s3/src/map.cpp` (defaults for a machine with +X to
   the left and +Y to the front, seen from the front).
+
+## CrowPanel 9" ESP32-P4
+
+The same functions on a 9" screen with more room: larger map, X/Y/Z, job line with elapsed time and job end,
+settings and SD card lists, firmware update from the display.
+
+### Parts
+
+| Part | |
+|---|---|
+| Elecrow CrowPanel Advanced 9" ESP32-P4 (board V1.2) | the display; WiFi through its ESP32-C6 |
+| ESP32-S3-DevKitC-1 N16R8 | the bridge at the controller (USB host and WiFi access point) |
+| optional: EC11 rotary encoder | feed override |
+| optional: battery board (e.g. IP5306 power bank board) + 18650 cells | cordless use over WiFi |
+| optional: D1 Mini ESP32 with the [gamepad receiver](https://github.com/Steppge/grblHAL-Plugin-Gamepad) | PS4 controller for jogging |
+
+Only for **ESP32-P4 chip revision v1.x** (the boards sold so far): the PlatformIO board `esp32-p4-evboard` uses
+the framework libraries for revisions below 3.0.
+
+### Connection to the controller
+
+```
+P4 display ==USB cable or WiFi==> ESP32-S3 bridge -UART-> grblHAL board (display link)
+                                                   -UART-> grblHAL board (gamepad, optional)
+```
+
+The display's USB-C socket "USB 2.0" goes to the "USB" socket of the bridge. Without the cable the display
+connects to a hidden WiFi network of the bridge; the network name and password are passed over the cable on
+every plug-in, nobody types them. The bridge firmware is a separate project (Octopus-Bridge, ESP-IDF).
+Both UARTs run at 921600 baud: set `DISPLAY_LINK_BAUD` (and `GAMEPAD_BAUD`) to 921600 in `my_machine.h`.
+
+### Settings: `esp32p4/src/display_config.h`
+
+Like Marlin's `Configuration.h`. Better than editing it: put your values into `esp32p4/src/my_display_config.h`,
+which is read first and ignored by git, so they survive an update.
+
+| Setting | Default | |
+|---|---|---|
+| `CLOCK` | 1 | time in the status bar and on the dimmed screen, job end as a time of day (NTP over the home network) |
+| `ENCODER` | 1 | EC11 encoder on J7 (GPIO50 A, GPIO51 B, GPIO5 push button): feed override, push = 100 % |
+| `BATTERY` | 1 | battery voltage on J7 GPIO53 (1 MOhm / 1 MOhm divider): symbol, percent, run time |
+| `GAMEPAD` | 1 | gamepad receiver on J7 (GPIO2 TX, GPIO3 RX), passed through to the controller |
+| `BIGDECK` | 0 | PC-Deck mode, only useful with the PC-Deck app |
+
+Unused parts can stay enabled, but a switched off part also frees its pins and hides its symbols.
+
+### Build and flash
+
+1. Open `esp32p4/` in PlatformIO, environment `display`.
+2. First time: connect the USB-C socket "UART" (CH340) and Upload.
+3. Later updates:
+   - copy `firmware.bin` to the root of the display's SD card, then switch the display off and on;
+   - or Settings - Display firmware, OK: the display goes to the home network (set it on the WiFi screen first)
+     and waits for the firmware; upload `firmware.bin` on `http://<name>.local/update` (user `admin`, the OTA
+     password) or with PlatformIO OTA (espota). Only while the machine is idle.
+
+### Housing
+
+`esp32p4/case/` holds a box and a bezel for the CrowPanel 9" with covers for the unused openings, as STEP and STL.
 
 ## Notes for the grblHAL side
 
