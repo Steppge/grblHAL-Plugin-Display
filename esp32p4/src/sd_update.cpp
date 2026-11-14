@@ -2,6 +2,10 @@
 // PlatformIO build folder, not the factory image) is written to the other OTA partition, renamed to
 // firmware.done and the display restarts. A broken or wrong file is renamed to firmware.bad.
 //
+// /gamepad.bin is the firmware of the gamepad receiver (D1 Mini ESP32 on J7, sketch 1.4 or newer with two
+// OTA partitions): it is sent over the gamepad UART in blocks, the receiver checks and starts it. Renamed
+// to gamepad.done or gamepad.bad. Protocol see grblHAL-Plugin-Gamepad esp32/sketch.cpp ($FW, $FA, $FK, $FD).
+//
 // The card is on SDMMC slot 0 in 1-bit mode (CLK IO43, CMD IO44, D0 IO39, as Elecrow's V1.2 example).
 // The WiFi chip uses slot 1 of the same SDMMC host, so this runs before wifi_begin() and releases the
 // host again. Arduino SD_MMC is not used: its default pins drive GPIO45, the touch SDA.
@@ -12,8 +16,19 @@
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <driver/sdmmc_host.h>
+#include <esp_rom_crc.h>
 #include "sd_update.h"
 #include "display.h"
+#include "pins.h"
+
+#define GP_FILE         SD_MOUNT "/gamepad.bin"
+#define GP_DONE         SD_MOUNT "/gamepad.done"
+#define GP_BAD          SD_MOUNT "/gamepad.bad"
+#define GP_BLOCK        1024        // as FW_BLOCK in the sketch
+#define GP_MAX          0x1A0000    // app partition of the receiver (partitions_ota.csv)
+#define GP_HELLO_MS     8000        // the receiver starts together with the display, it gets this long to answer
+#define GP_ACK_MS       3000        // per block (the receiver erases flash sectors meanwhile)
+#define GP_END_MS       8000        // image check at the end
 
 #define DIM_PCT     8       // backlight while writing: the picture flickers turquoise meanwhile
 
@@ -55,10 +70,158 @@ static void screen (const char *text, int pct)
     lv_refr_now(NULL);
 }
 
-static void file_rename (const char *to)
+static void file_rename (const char *to, const char *from = SD_FILE)
 {
     remove(to);
-    rename(SD_FILE, to);
+    rename(from, to);
+}
+
+// ------------------------------------------------------------------------ gamepad receiver
+
+static void gp_send (const char *body)
+{
+    uint8_t sum = 0;
+    for(const char *p = body; *p; p++)
+        sum ^= (uint8_t)*p;
+    Serial2.printf("\n$%s*%02X\n", body, sum);     // leading \n: ends a line cut short
+}
+
+// the next line "$<prefix>...*hh" with a valid checksum within ms, body without '$' and checksum into out;
+// other lines (the gamepad packets $GP) are skipped
+static bool gp_wait (const char *prefix, char *out, size_t n, uint32_t ms)
+{
+    static char line[64];
+    static size_t len = 0;
+    uint32_t t0 = millis();
+
+    while(millis() - t0 < ms) {
+        if(!Serial2.available()) {
+            delay(1);
+            continue;
+        }
+        char c = Serial2.read();
+        if(c == '$')
+            len = 0;
+        else if(c == '\n' || c == '\r') {
+            line[len] = '\0';
+            len = 0;
+            char *star = strrchr(line, '*');
+            if(!star || strncmp(line, prefix, strlen(prefix)))
+                continue;
+            *star = '\0';
+            uint8_t sum = 0;
+            for(char *p = line; *p; p++)
+                sum ^= (uint8_t)*p;
+            if(strtoul(star + 1, NULL, 16) == sum) {
+                strlcpy(out, line, n);
+                return true;
+            }
+        } else if(len < sizeof(line) - 1)
+            line[len++] = c;
+    }
+    return false;
+}
+
+// NULL when done, else why not
+static const char *gp_flash (FILE *f, long size, bool show)
+{
+    char body[32];
+
+    if(size <= 0 || size > GP_MAX)
+        return "file size";
+    uint8_t *img = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if(img == NULL)
+        return "no memory";
+    if(fread(img, 1, size, f) != (size_t)size) {
+        heap_caps_free(img);
+        return "read error";
+    }
+    uint32_t crc = esp_rom_crc32_le(0, img, size);
+
+    Serial2.setRxBufferSize(1024);
+    Serial2.begin(GAMEPAD_BAUD, SERIAL_8N1, PIN_GAMEPAD_RX, PIN_GAMEPAD_TX);
+
+    // the receiver may still be starting: ask again every second
+    const char *why = "receiver does not answer (old firmware: flash it once over USB)";
+    snprintf(body, sizeof(body), "FW,%ld,%08lx", size, (unsigned long)crc);
+    for(uint32_t t0 = millis(); millis() - t0 < GP_HELLO_MS; ) {
+        char ans[16];
+        gp_send(body);
+        if(gp_wait("FA,", ans, sizeof(ans), 1000)) {
+            why = ans[3] == '1' ? NULL : "refused by the receiver";
+            break;
+        }
+    }
+
+    for(long sent = 0; why == NULL && sent < size; ) {
+        size_t n = min((long)GP_BLOCK, size - sent);
+        char ans[24];
+        Serial2.write(img + sent, n);
+        if(!gp_wait("FK,", ans, sizeof(ans), GP_ACK_MS)) {
+            why = gp_wait("FD,", ans, sizeof(ans), 10) ? "receiver stopped" : "no answer";
+            break;
+        }
+        if(atol(ans + 3) != sent + (long)n) {
+            why = "out of step";
+            break;
+        }
+        sent += n;
+        if(show) {
+            static int shown = -1;
+            int pct = sent * 100 / size;
+            if(pct != shown) {
+                char t[48];
+                shown = pct;
+                snprintf(t, sizeof(t), "Gamepad receiver\n%d %%", pct);
+                screen(t, pct);
+            }
+        }
+    }
+
+    if(why == NULL) {
+        char ans[16];
+        if(!gp_wait("FD,", ans, sizeof(ans), GP_END_MS))
+            why = "no answer at the end";
+        else if(ans[3] != '1')
+            why = "image check failed";
+    }
+
+    Serial2.end();          // usb_link_begin() opens it again
+    heap_caps_free(img);
+    return why;
+}
+
+static void gp_update_check (bool show)
+{
+    FILE *f = fopen(GP_FILE, "rb");
+    if(f == NULL)
+        return;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    Serial.printf("SD card: gamepad.bin %ld bytes, updating the gamepad receiver\n", size);
+    if(show)
+        screen("Gamepad receiver\n0 %", 0);
+    const char *why = gp_flash(f, size, show);
+    fclose(f);
+    file_rename(why ? GP_BAD : GP_DONE, GP_FILE);
+
+    if(why == NULL) {
+        Serial.println("Gamepad receiver updated, it restarts");
+        if(show) {
+            screen("Gamepad receiver updated", -1);
+            delay(1500);
+        }
+    } else {
+        Serial.printf("Gamepad receiver update failed: %s, file renamed to gamepad.bad\n", why);
+        if(show) {
+            char t[160];
+            snprintf(t, sizeof(t), "Gamepad receiver update failed\n%s\ngamepad.bin renamed to gamepad.bad", why);
+            screen(t, -1);
+            delay(4000);
+        }
+    }
 }
 
 static bool flash (FILE *f, size_t size)
@@ -145,6 +308,9 @@ void sd_update_check (bool show)
         file_rename(ok ? SD_DONE : SD_BAD);
     } else
         Serial.println("SD card: no firmware.bin");
+
+    if(GAMEPAD && !found)       // after a display update this comes at the next start
+        gp_update_check(show);
 
     esp_vfs_fat_sdcard_unmount(SD_MOUNT, card);     // also releases the SDMMC host
 
