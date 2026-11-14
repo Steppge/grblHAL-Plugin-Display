@@ -25,9 +25,10 @@
 #define GP_DONE         SD_MOUNT "/gamepad.done"
 #define GP_BAD          SD_MOUNT "/gamepad.bad"
 #define GP_BLOCK        1024        // as FW_BLOCK in the sketch
-#define GP_MAX          0x1A0000    // app partition of the receiver (partitions_ota.csv)
+#define GP_RESENDS      5           // a block at most this many times again in a row (FW_RESENDS in the sketch)
+#define GP_MAX          0x1A0000   // app partition of the receiver (partitions_ota.csv)
 #define GP_HELLO_MS     8000        // the receiver starts together with the display, it gets this long to answer
-#define GP_ACK_MS       3000        // per block (the receiver erases flash sectors meanwhile)
+#define GP_ACK_MS       2500        // per block, less than the 3 s after which the receiver gives up (FD,0)
 #define GP_END_MS       8000        // image check at the end
 
 #define DIM_PCT     8       // backlight while writing: the picture flickers turquoise meanwhile
@@ -86,6 +87,8 @@ static void gp_send (const char *body)
     Serial2.printf("\n$%s*%02X\n", body, sum);     // leading \n: ends a line cut short
 }
 
+static char gp_other[64];        // the last skipped line that was no gamepad packet, for the diagnosis
+
 // the next line "$<prefix>...*hh" with a valid checksum within ms, body without '$' and checksum into out;
 // other lines (the gamepad packets $GP) are skipped
 static bool gp_wait (const char *prefix, char *out, size_t n, uint32_t ms)
@@ -106,8 +109,11 @@ static bool gp_wait (const char *prefix, char *out, size_t n, uint32_t ms)
             line[len] = '\0';
             len = 0;
             char *star = strrchr(line, '*');
-            if(!star || strncmp(line, prefix, strlen(prefix)))
+            if(!star || strncmp(line, prefix, strlen(prefix))) {
+                if(*line && strncmp(line, "GP,", 3))
+                    strlcpy(gp_other, line, sizeof(gp_other));
                 continue;
+            }
             *star = '\0';
             uint8_t sum = 0;
             for(char *p = line; *p; p++)
@@ -120,6 +126,41 @@ static bool gp_wait (const char *prefix, char *out, size_t n, uint32_t ms)
             line[len++] = c;
     }
     return false;
+}
+
+// After a block without acknowledge: what the receiver sends in the next 4 s, on the console. FD,0 = it gave
+// up (bytes lost), $GP packets with a low sequence number = it restarted, nothing = it hangs.
+static void gp_diagnose (long sent, size_t n)
+{
+    char line[96];
+    size_t len = 0;
+    int lines = 0, gp = 0, first_seq = -1;
+    uint32_t t0 = millis();
+
+    Serial.printf("gamepad update: no acknowledge for the block at %ld (%u bytes), last other line '%s', listening 4 s ...\n",
+                  sent, (unsigned)n, gp_other);
+    while(millis() - t0 < 4000) {
+        if(!Serial2.available()) {
+            delay(1);
+            continue;
+        }
+        char c = Serial2.read();
+        if(c == '\n' || c == '\r') {
+            line[len] = '\0';
+            if(len) {
+                if(!strncmp(line, "$GP,", 4)) {
+                    if(gp++ == 0)
+                        first_seq = atoi(line + 4);
+                } else if(lines++ < 8)
+                    Serial.printf("  %5lu ms: %s\n", (unsigned long)(millis() - t0), line);
+            }
+            len = 0;
+        } else if(len < sizeof(line) - 1)
+            line[len++] = c >= ' ' && c < 127 ? c : '.';
+    }
+    Serial.printf("gamepad update: %d other lines, %d gamepad packets (first seq %d)%s\n", lines, gp, first_seq,
+                  gp ? (first_seq >= 0 && first_seq < 100 ? " - the receiver restarted" : " - the receiver runs normally again")
+                     : lines ? "" : " - the receiver is silent");
 }
 
 // NULL when done, else why not
@@ -153,19 +194,30 @@ static const char *gp_flash (FILE *f, long size, bool show)
         }
     }
 
+    int resends = 0, resends_all = 0;
     for(long sent = 0; why == NULL && sent < size; ) {
         size_t n = min((long)GP_BLOCK, size - sent);
         char ans[24];
         Serial2.write(img + sent, n);
         if(!gp_wait("FK,", ans, sizeof(ans), GP_ACK_MS)) {
-            why = gp_wait("FD,", ans, sizeof(ans), 10) ? "receiver stopped" : "no answer";
+            why = "no answer";
+            gp_diagnose(sent, n);
             break;
         }
-        if(atol(ans + 3) != sent + (long)n) {
-            why = "out of step";
+        long got = atol(ans + 3);
+        if(got == sent && ++resends <= GP_RESENDS) {    // the receiver lost bytes: the block again
+            resends_all++;
+            Serial.printf("gamepad update: block at %ld sent again\n", sent);
+            continue;
+        }
+        if(got != sent + (long)n) {
+            why = got == sent ? "bytes lost again and again" : "out of step";
             break;
         }
+        resends = 0;
         sent += n;
+        if(sent * 20 / size != (sent - n) * 20 / size)     // every 5 % on the console
+            Serial.printf("gamepad update: %ld of %ld bytes\n", sent, size);
         if(show) {
             static int shown = -1;
             int pct = sent * 100 / size;
@@ -179,11 +231,12 @@ static const char *gp_flash (FILE *f, long size, bool show)
     }
 
     if(why == NULL) {
-        char ans[16];
+        char ans[48] = "";
         if(!gp_wait("FD,", ans, sizeof(ans), GP_END_MS))
             why = "no answer at the end";
         else if(ans[3] != '1')
             why = "image check failed";
+        Serial.printf("gamepad update: receiver says '%s', %d blocks sent again\n", ans, resends_all);
     }
 
     Serial2.end();          // usb_link_begin() opens it again

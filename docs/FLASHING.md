@@ -116,14 +116,16 @@ The receiver sits in the display housing on J7 (GPIO2/3), see the [gamepad recei
    pio run -e esp32dev -t upload --upload-port COM10
    ```
    Disconnect its 5 V wire from the display meanwhile, or leave the display switched off. The console
-   (115200) shows `esp32_gamepad 1.5 ready, n allowed controller(s)`.
+   (115200) shows `esp32_gamepad 1.6 ready, n allowed controller(s)`.
    If Windows says "a device attached to the system is not functioning", unplug and plug the cable again.
 3. **Pairing** a controller: on the display Settings - Gamepad - Pair controller, then on the PS4 controller
    hold Share + PS until the light bar flashes.
 4. **Updates** without opening the housing: copy `.pio/build/esp32dev/firmware.bin` of the template as
    **`gamepad.bin`** to the display's SD card and switch the display off and on. It sends the file to the
    receiver while it starts (about 15 s, progress on the screen) and renames it to `gamepad.done` or
-   `gamepad.bad`. A receiver before sketch 1.4 does not answer: flash it once over USB.
+   `gamepad.bad`. The update over the card needs sketch 1.6 or newer on the receiver (1.4 and 1.5 answer,
+   but give up at the first block): flash an older one once over USB. With `gamepad.bad` the display console
+   (CH340, 921600) shows the reason the receiver gave (`FD,0,<why>`).
 
 ---
 
