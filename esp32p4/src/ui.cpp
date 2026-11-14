@@ -39,9 +39,9 @@
 #define MAP_H    420
 #define SIDE_X   580    // position card and jog / override card
 #define SIDE_W   432
-#define DRO_H    236
-#define ACT_Y    310
-#define ACT_H    174
+#define DRO_H    174    // position card (tap: Go to)
+#define ACT_Y    248    // jog / override card (tap: Move)
+#define ACT_H    236
 #define ROW_Y    496    // fixed button row
 #define ROW_H     92
 #define ROW_N      7
@@ -59,10 +59,12 @@ enum action_t {
     A_SdRefresh, A_SdRun, A_SdPick,
     A_ScrSettings, A_Key, A_KeyDel, A_KeyClr, A_KeyNow, A_Save, A_JobReset,
     A_ScrWifi, A_WifiToggle, A_WifiSave, A_WifiScan, A_WebMode, A_FwOk, A_FwCancel,
-    A_GpChange, A_GpCancel, A_GpDefaults, A_GpPair, A_GpForget, A_Mode
+    A_GpChange, A_GpCancel, A_GpDefaults, A_GpPair, A_GpForget, A_Mode,
+    A_ScrGoto, A_GField, A_GKey, A_GDel, A_GClr, A_GOrder, A_GMach, A_GGo
 };
 
-enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Gamepad, S_Wifi, S_Count };
+enum screen_t { S_Main, S_Zoom, S_Menu, S_Move, S_Probe, S_Laser, S_Sd, S_SetGroups, S_SetList, S_SetEdit, S_Gamepad, S_Wifi,
+                S_Goto, S_Count };
 
 struct ui_btn_t {
     lv_obj_t *obj, *icon, *text, *bar;
@@ -76,6 +78,7 @@ struct ui_btn_t {
 };
 
 static const float step_val[] = { 0.01f, 0.05f, 0.1f, 1.0f, 10.0f };
+static const uint32_t ax_col[3] = { COL_X, COL_Y, COL_Z };      // axis badges
 static const uint8_t laser_pwr_val[] = { 1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100 };
 static const uint16_t laser_time_val[] = { 10, 20, 50, 100, 200, 500, 1000, 2000 };
 static const uint16_t probe_feed_val[] = { 25, 50, 100, 150, 200, 300 };
@@ -87,7 +90,7 @@ static struct {
     uint8_t probe_feed, laser_pwr, laser_time, step;
 } cfg = { 0.0f, 2, 4, 3, 3 };
 
-static ui_btn_t btns[128];
+static ui_btn_t btns[192];
 static int n_btns = 0;
 static screen_t screen = S_Main;
 static lv_obj_t *scr_obj[S_Count];
@@ -170,7 +173,22 @@ static uint32_t list_scrolled = 0;      // millis() of the last movement of a li
 
 static void wifi_mask (int i);
 
-static bool move_from_main = false;     // Move was opened from the position card, back returns to main
+static bool move_from_main = false;     // Move was opened from the jog card, back returns to main
+
+// Go to: target per axis (typed ones only, an untouched axis stays where it is), axis order, work or machine
+// coordinates; order and coordinate system are kept in the NVS
+#define GOTO_ORDERS 7
+static const char *const goto_order_name[GOTO_ORDERS] = { "Z  Y  X", "Z  X  Y", "X  Y  Z", "Y  X  Z", "Z  XY", "XY  Z", "XYZ" };
+static const char *const goto_order_steps[GOTO_ORDERS][3] = {
+    { "Z", "Y", "X" }, { "Z", "X", "Y" }, { "X", "Y", "Z" }, { "Y", "X", "Z" }, { "Z", "XY", NULL }, { "XY", "Z", NULL },
+    { "XYZ", NULL, NULL } };
+static lv_obj_t *goto_field[3], *goto_val_lbl[3], *goto_msg;
+static ui_btn_t *b_goto_order[GOTO_ORDERS], *b_goto_work, *b_goto_mach, *b_goto_go;
+static char goto_val[3][16];
+static bool goto_set[3], goto_fresh = true;
+static int goto_sel = 0;
+static uint8_t goto_order = 0;
+static bool goto_mach = false;
 static int pending_screen = -1;         // screen change requested from a list row event
 
 // WiFi
@@ -886,7 +904,6 @@ static void build_topbar (lv_obj_t *s)
 
 static void build_main (lv_obj_t *s)
 {
-    static const uint32_t ax_col[3] = { COL_X, COL_Y, COL_Z };
     static const char *step_names[] = { "0.01 mm", "0.05 mm", "0.1 mm", "1 mm", "10 mm" };
 
     // map: machine area, preview, trace, Z bar
@@ -915,51 +932,66 @@ static void build_main (lv_obj_t *s)
     lv_obj_set_style_bg_color(b_view->obj, C(0x141632), 0);
     lv_obj_set_style_bg_opa(b_view->obj, 220, 0);
 
-    // position, tapping it opens the Move screen
+    // position, tapping it opens Go to (not during a job)
     dro_card = glass(s, SIDE_X, CARD_Y, SIDE_W, DRO_H, 18);
     lv_obj_add_flag(dro_card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_border_width(dro_card, 2, LV_STATE_PRESSED);
     lv_obj_set_style_border_opa(dro_card, 200, LV_STATE_PRESSED);
     lv_obj_add_event_cb(dro_card, [](lv_event_t *e) {
+        if(job_mode)
+            return;
         beep_click();
-        action_run(A_ScrMove, 0);
-        move_from_main = true;
+        action_run(A_ScrGoto, 0);
     }, LV_EVENT_CLICKED, NULL);
     for(int i = 0; i < 3; i++) {
-        int y = 8 + i * 76;
-        lv_obj_t *badge = box(dro_card, 14, y + 10, 44, 44);
+        int y = 4 + i * 56;
+        lv_obj_t *badge = box(dro_card, 14, y + 8, 40, 40);
+        lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);       // a tap on the badge opens Go to as well
         lv_obj_set_style_radius(badge, 10, 0);
         gradient(badge, ax_col[i], lv_color_to_u32(lv_color_darken(C(ax_col[i]), 90)) & 0xFFFFFF, LV_GRAD_DIR_VER);
         lv_obj_t *l = label(badge, &lv_font_montserrat_24, COL_TEXT, i == 0 ? "X" : (i == 1 ? "Y" : "Z"));
         lv_obj_center(l);
 
-        dro_val[i] = label(dro_card, &lv_font_montserrat_48, COL_TEXT, "0.00");
+        dro_val[i] = label(dro_card, &lv_font_montserrat_36, COL_TEXT, "0.00");
         lv_obj_set_style_text_align(dro_val[i], LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_set_width(dro_val[i], SIDE_W - 96);
-        lv_obj_set_pos(dro_val[i], 72, y);
-        dro_mach[i] = label(dro_card, &lv_font_montserrat_16, COL_MUTED, "");
+        lv_obj_set_pos(dro_val[i], 72, y - 2);
+        dro_mach[i] = label(dro_card, &lv_font_montserrat_14, COL_MUTED, "");
         lv_obj_set_style_text_align(dro_mach[i], LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_set_width(dro_mach[i], SIDE_W - 96);
-        lv_obj_set_pos(dro_mach[i], 72, y + 52);
+        lv_obj_set_pos(dro_mach[i], 72, y + 38);
     }
 
-    // below: jog cross with the step size when idle, overrides and progress during a job
+    // below: jog cross with the step size when idle, overrides and progress during a job;
+    // tapping the card outside its buttons opens the large Move screen (not during a job)
     lv_obj_t *act = glass(s, SIDE_X, ACT_Y, SIDE_W, ACT_H, 18);
+    lv_obj_add_flag(act, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_border_width(act, 2, LV_STATE_PRESSED);
+    lv_obj_set_style_border_opa(act, 200, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(act, [](lv_event_t *e) {
+        if(job_mode)
+            return;
+        beep_click();
+        action_run(A_ScrMove, 0);
+        move_from_main = true;
+    }, LV_EVENT_CLICKED, NULL);
     jog_box = box(act, 0, 0, SIDE_W, ACT_H);
     ovr_box = box(act, 0, 0, SIDE_W, ACT_H);
+    lv_obj_remove_flag(jog_box, LV_OBJ_FLAG_CLICKABLE);     // a tap between the buttons reaches the card
+    lv_obj_remove_flag(ovr_box, LV_OBJ_FLAG_CLICKABLE);
 
-    btn(jog_box, 76, 6, 66, 52, 12, NULL, "Y+", COL_FEED1, COL_FEED2, A_JogYp);
-    btn(jog_box, 8, 61, 66, 52, 12, NULL, "X-", COL_FEED1, COL_FEED2, A_JogXm);
-    btn(jog_box, 144, 61, 66, 52, 12, NULL, "X+", COL_FEED1, COL_FEED2, A_JogXp);
-    btn(jog_box, 76, 116, 66, 52, 12, NULL, "Y-", COL_FEED1, COL_FEED2, A_JogYm);
-    btn(jog_box, 222, 6, 66, 79, 12, NULL, "Z+", COL_PWR1, COL_PWR2, A_JogZp);
-    btn(jog_box, 222, 89, 66, 79, 12, NULL, "Z-", COL_PWR1, COL_PWR2, A_JogZm);
+    btn(jog_box, 82, 8, 70, 70, 14, NULL, "Y+", COL_FEED1, COL_FEED2, A_JogYp);
+    btn(jog_box, 8, 83, 70, 70, 14, NULL, "X-", COL_FEED1, COL_FEED2, A_JogXm);
+    btn(jog_box, 156, 83, 70, 70, 14, NULL, "X+", COL_FEED1, COL_FEED2, A_JogXp);
+    btn(jog_box, 82, 158, 70, 70, 14, NULL, "Y-", COL_FEED1, COL_FEED2, A_JogYm);
+    btn(jog_box, 236, 8, 74, 107, 14, NULL, "Z+", COL_PWR1, COL_PWR2, A_JogZp);
+    btn(jog_box, 236, 121, 74, 107, 14, NULL, "Z-", COL_PWR1, COL_PWR2, A_JogZm);
     for(int i = 0; i < N_VAL(step_val); i++)
-        b_step_main[i] = btn(jog_box, 298, 6 + i * 33, 126, 29, 8, NULL, step_names[i], 0, 0, A_Step0 + i);
+        b_step_main[i] = btn(jog_box, 320, 8 + i * 45, 104, 40, 10, NULL, step_names[i], 0, 0, A_Step0 + i);
 
     static const char *ovr_name[2] = { "Feed", "Power" };
     for(int i = 0; i < 2; i++) {
-        int y = 6 + i * 60;
+        int y = 10 + i * 76;
         uint32_t c1 = i ? COL_PWR1 : COL_FEED1, c2 = i ? COL_PWR2 : COL_FEED2;
         lv_obj_t *l = label(ovr_box, &lv_font_montserrat_20, COL_MUTED, ovr_name[i]);
         lv_obj_set_pos(l, 18, y + 14);
@@ -973,8 +1005,8 @@ static void build_main (lv_obj_t *s)
     lbl_pct = label(ovr_box, &lv_font_montserrat_18, COL_TEXT, "");
     lv_label_set_long_mode(lbl_pct, LV_LABEL_LONG_DOT);
     lv_obj_set_width(lbl_pct, SIDE_W - 36);
-    lv_obj_set_pos(lbl_pct, 18, 126);
-    prog_track = box(ovr_box, 18, 152, SIDE_W - 36, 12);
+    lv_obj_set_pos(lbl_pct, 18, 170);
+    prog_track = box(ovr_box, 18, 202, SIDE_W - 36, 12);
     lv_obj_set_style_radius(prog_track, 6, 0);
     lv_obj_set_style_bg_color(prog_track, C(COL_TRACK), 0);
     lv_obj_set_style_bg_opa(prog_track, LV_OPA_COVER, 0);
@@ -1059,6 +1091,150 @@ static void build_move (lv_obj_t *s)
     static const char *names[] = { "0.01 mm", "0.05 mm", "0.1 mm", "1 mm", "10 mm" };
     for(int i = 0; i < N_VAL(step_val); i++)
         b_step[i] = btn(s, 730, 130 + i * 87, 282, 78, 16, NULL, names[i], 0, 0, A_Step0 + i);
+}
+
+// Go to: fields X/Y/Z on the left (tap selects, the keypad types into it), work/machine coordinates and the
+// axis order below, keypad with delete, clear and OK on the right
+static void build_goto (lv_obj_t *s)
+{
+    lv_obj_t *t = label(s, &lv_font_montserrat_28, COL_TEXT, "Go to");
+    lv_obj_set_pos(t, 24, 74);
+    goto_msg = label(s, &lv_font_montserrat_16, COL_MUTED, "Only typed axes move");
+    lv_obj_set_pos(goto_msg, 140, 82);
+
+    for(int i = 0; i < 3; i++) {
+        int y = 118 + i * 72;
+        lv_obj_t *badge = box(s, 12, y + 10, 44, 44);
+        lv_obj_set_style_radius(badge, 10, 0);
+        gradient(badge, ax_col[i], lv_color_to_u32(lv_color_darken(C(ax_col[i]), 90)) & 0xFFFFFF, LV_GRAD_DIR_VER);
+        lv_obj_center(label(badge, &lv_font_montserrat_24, COL_TEXT, i == 0 ? "X" : (i == 1 ? "Y" : "Z")));
+
+        goto_field[i] = glass(s, 66, y, 418, 64, 14);
+        lv_obj_add_flag(goto_field[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_border_color(goto_field[i], C(COL_RING1), 0);
+        lv_obj_add_event_cb(goto_field[i], [](lv_event_t *e) {
+            beep_click();
+            action_run(A_GField, (int)(intptr_t)lv_event_get_user_data(e));
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        goto_val_lbl[i] = label(goto_field[i], &lv_font_montserrat_36, COL_TEXT, "");
+        lv_obj_set_style_text_align(goto_val_lbl[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_width(goto_val_lbl[i], 390);
+        lv_obj_align(goto_val_lbl[i], LV_ALIGN_RIGHT_MID, -14, 0);
+    }
+
+    b_goto_work = btn(s, 12, 340, 232, 50, 12, NULL, "Workpiece (G54)", 0, 0, A_GMach);
+    b_goto_work->arg = 0;
+    b_goto_mach = btn(s, 252, 340, 232, 50, 12, NULL, "Machine", 0, 0, A_GMach);
+    b_goto_mach->arg = 1;
+
+    lv_obj_t *o = label(s, &lv_font_montserrat_16, COL_MUTED, "Order");
+    lv_obj_set_pos(o, 14, 400);
+    for(int i = 0; i < GOTO_ORDERS; i++) {
+        int x = 12 + (i % 4) * 120, y = 424 + (i / 4) * 58;
+        b_goto_order[i] = btn(s, x, y, 112, 50, 12, NULL, goto_order_name[i], 0, 0, A_GOrder);
+        b_goto_order[i]->arg = i;
+    }
+
+    static const char keys[] = "789456123-0.";
+    for(int i = 0; i < 12; i++) {
+        char k[2] = { keys[i], 0 };
+        ui_btn_t *b = btn(s, 500 + (i % 3) * 172, 74 + (i / 3) * 106, 164, 98, 18, NULL, k, 0, 0, A_GKey);
+        lv_obj_set_style_text_font(b->text, &lv_font_montserrat_48, 0);
+        b->arg = keys[i];
+    }
+    btn(s, 500, 500, 164, 88, 18, LV_SYMBOL_BACKSPACE, NULL, 0, 0, A_GDel);
+    btn(s, 672, 500, 164, 88, 18, NULL, "C", 0, 0, A_GClr);
+    b_goto_go = btn(s, 844, 500, 168, 88, 18, LV_SYMBOL_OK, "OK", COL_GREEN1, COL_GREEN2, A_GGo);
+}
+
+// a typed key into the selected field; the first key after selecting a field starts a new value
+static void goto_key (char c)
+{
+    char *v = goto_val[goto_sel];
+    size_t n;
+
+    if(goto_fresh || !goto_set[goto_sel]) {
+        *v = '\0';
+        goto_set[goto_sel] = true;
+        goto_fresh = false;
+    }
+    n = strlen(v);
+    // machine coordinates: Z runs from 0 (top) downwards, a typed Z gets its minus by itself
+    if(goto_mach && goto_sel == 2 && n == 0 && c != '-') {
+        strcpy(v, "-");
+        n = 1;
+    }
+    if(c == '-') {
+        if(n == 0)
+            strcpy(v, "-");
+    } else if(c == '.') {
+        if(!strchr(v, '.') && n < sizeof(goto_val[0]) - 2)
+            strcat(v, n == 0 || (n == 1 && *v == '-') ? "0." : ".");
+    } else if(n < sizeof(goto_val[0]) - 1) {
+        v[n] = c;
+        v[n + 1] = '\0';
+    }
+}
+
+// one G0 line per step of the chosen order, only with the typed axes; false if a typed value is no number
+static bool goto_send (void)
+{
+    float t[3];
+    char cmd[64];
+
+    for(int i = 0; i < 3; i++) {
+        if(!goto_set[i])
+            continue;
+        char *end;
+        t[i] = strtof(goto_val[i], &end);
+        if(end == goto_val[i] || *end)
+            return false;
+    }
+    if(goto_mach && goto_set[2] && t[2] > 0.0f)     // machine Z is never above 0
+        t[2] = -t[2];
+    for(int s = 0; s < 3 && goto_order_steps[goto_order][s]; s++) {
+        int n = snprintf(cmd, sizeof(cmd), goto_mach ? "G53G0" : "G90G0");
+        bool any = false;
+        for(const char *a = goto_order_steps[goto_order][s]; *a; a++) {
+            int i = *a - 'X';
+            if(goto_set[i]) {
+                n += snprintf(cmd + n, sizeof(cmd) - n, "%c%.3f", *a, t[i]);
+                any = true;
+            }
+        }
+        if(any)
+            link_cmd(cmd);
+    }
+    return true;
+}
+
+static void update_goto (void)
+{
+    char buf[24];
+    bool idle = mc.online && mc.state == STATE_IDLE;
+    bool any = goto_set[0] || goto_set[1] || goto_set[2];
+
+    for(int i = 0; i < 3; i++) {
+        // untouched: the current position, dimmed (the axis stays there)
+        if(goto_set[i])
+            set_text(goto_val_lbl[i], *goto_val[i] ? goto_val[i] : " ");
+        else {
+            snprintf(buf, sizeof(buf), "%.3f", goto_mach ? mc.mpos[i] : mc.wpos[i]);
+            set_text(goto_val_lbl[i], buf);
+        }
+        text_color(goto_val_lbl[i], C(goto_set[i] ? COL_TEXT : COL_MUTED));
+        if(lv_obj_get_style_border_width(goto_field[i], 0) != (i == goto_sel ? 3 : 1)) {
+            lv_obj_set_style_border_width(goto_field[i], i == goto_sel ? 3 : 1, 0);
+            lv_obj_set_style_border_opa(goto_field[i], i == goto_sel ? LV_OPA_COVER : 40, 0);
+        }
+    }
+    btn_set(b_goto_work, NULL, "Workpiece (G54)", goto_mach ? 0 : COL_GREEN1, goto_mach ? 0 : COL_GREEN2, A_GMach);
+    btn_set(b_goto_mach, NULL, "Machine", goto_mach ? COL_GREEN1 : 0, goto_mach ? COL_GREEN2 : 0, A_GMach);
+    for(int i = 0; i < GOTO_ORDERS; i++)
+        btn_set(b_goto_order[i], NULL, goto_order_name[i], i == goto_order ? COL_GREEN1 : 0, i == goto_order ? COL_GREEN2 : 0, A_GOrder);
+    btn_enable(b_goto_go, idle && any);
+    set_text(goto_msg, !mc.online ? "No connection to the machine" : !idle ? "Only while the machine is idle" :
+                       goto_mach ? "Typed axes only, machine Z is negative" : "Only typed axes move, the others stay");
 }
 
 static lv_obj_t *value_row (lv_obj_t *s, int y, const char *name, int dn, int up)
@@ -1966,7 +2142,7 @@ static void action_run (int action, int arg)
             break;
         }
         case A_Back:
-            screen_show(screen == S_Menu || (screen == S_Move && move_from_main) ? S_Main : screen == S_SetEdit ? S_SetList :
+            screen_show(screen == S_Menu || screen == S_Goto || (screen == S_Move && move_from_main) ? S_Main : screen == S_SetEdit ? S_SetList :
                         screen == S_SetList || screen == S_Gamepad ? S_SetGroups : S_Menu);
             break;
         case A_ScrSettings: screen_show(S_SetGroups); break;
@@ -2123,6 +2299,46 @@ static void action_run (int action, int arg)
             }
             break;
         case A_ScrMove:     move_from_main = false; screen_show(S_Move); break;
+        case A_ScrGoto:
+            for(int i = 0; i < 3; i++)
+                goto_set[i] = false;
+            goto_sel = 0;
+            goto_fresh = true;
+            screen_show(S_Goto);
+            break;
+        case A_GField:      goto_sel = constrain(arg, 0, 2); goto_fresh = true; break;
+        case A_GKey:        goto_key((char)arg); break;
+        case A_GDel:
+            if(goto_set[goto_sel]) {
+                size_t n = strlen(goto_val[goto_sel]);
+                if(n)
+                    goto_val[goto_sel][n - 1] = '\0';
+                goto_fresh = false;
+            }
+            break;
+        case A_GClr:        goto_set[goto_sel] = false; goto_fresh = true; break;     // back to "stays"
+        case A_GOrder:
+            goto_order = constrain(arg, 0, GOTO_ORDERS - 1);
+            prefs.putUChar("gorder", goto_order);
+            break;
+        case A_GMach:
+            if(goto_mach != !!arg) {
+                goto_mach = !!arg;
+                prefs.putBool("gmach", goto_mach);
+                // to machine coordinates with a positive Z typed: shown with its minus as it will be sent
+                char *z = goto_val[2];
+                if(goto_mach && goto_set[2] && *z && *z != '-' && strtof(z, NULL) > 0.0f && strlen(z) < sizeof(goto_val[2]) - 1) {
+                    memmove(z + 1, z, strlen(z) + 1);
+                    *z = '-';
+                }
+            }
+            break;
+        case A_GGo:
+            if(goto_send())
+                screen_show(S_Main);
+            else
+                banner_show("Not a number - check the values", COL_ORANGE2, 3000);
+            break;
         case A_ScrProbe:    screen_show(S_Probe); break;
         case A_ScrLaser:    screen_show(S_Laser); break;
         case A_ScrSd:       screen_show(S_Sd); break;
@@ -2524,6 +2740,10 @@ static void update_screen (void)
             update_zoom();
             break;
 
+        case S_Goto:
+            update_goto();
+            break;
+
         case S_Move:
             snprintf(buf, sizeof(buf), "X %.2f    Y %.2f    Z %.2f", mc.wpos[0], mc.wpos[1], mc.wpos[2]);
             set_text(move_pos, buf);
@@ -2777,6 +2997,8 @@ void ui_init (void)
     cfg.probe_feed = min<uint8_t>(cfg.probe_feed, N_VAL(probe_feed_val) - 1);
     cfg.laser_pwr = min<uint8_t>(cfg.laser_pwr, N_VAL(laser_pwr_val) - 1);
     cfg.laser_time = min<uint8_t>(cfg.laser_time, N_VAL(laser_time_val) - 1);
+    goto_order = min<uint8_t>(prefs.getUChar("gorder", 0), GOTO_ORDERS - 1);
+    goto_mach = prefs.getBool("gmach", false);
 
     lv_obj_t *root = lv_screen_active();
     lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
@@ -2790,6 +3012,7 @@ void ui_init (void)
     build_zoom(scr_obj[S_Zoom]);
     build_menu(scr_obj[S_Menu]);
     build_move(scr_obj[S_Move]);
+    build_goto(scr_obj[S_Goto]);
     build_probe(scr_obj[S_Probe]);
     build_laser(scr_obj[S_Laser]);
     build_sd(scr_obj[S_Sd]);
