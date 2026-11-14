@@ -25,6 +25,8 @@
 #define BRIDGE_GAMEPAD_PORT 5001    // UDP
 #define TCP_RETRY_MS        1000
 #define TCP_CONNECT_MS       500
+#define TCP_CHECK_MS          50
+#define IDLE_MAX_MS            4    // the task waits up to this long while nothing comes or goes
 
 #define CDC_EP_SIZE      64
 #define CDC_NOTIF_SIZE    8
@@ -91,24 +93,33 @@ static uint16_t cdc1_descriptor (uint8_t *dst, uint8_t *itf)
     return sizeof(desc);
 }
 
-// WiFi path: connect the link to the bridge while it is wanted, else close it
+// WiFi path: connect the link to the bridge while it is wanted, else close it. While connected the state is
+// asked only every TCP_CHECK_MS (each tcp.connected() is a socket call); a broken connection meanwhile only
+// makes read/write fail.
 static bool net_update (bool wanted)
 {
-    static uint32_t last_try = 0;
+    static uint32_t last_try = 0, last_check = 0;
+    static bool conn = false;
 
     if(!wanted) {
-        if(tcp.connected() || tcp)
+        if(conn || tcp)
             tcp.stop();
+        conn = false;
         return false;
     }
-    if(!tcp.connected() && millis() - last_try >= TCP_RETRY_MS) {
+    if(conn && millis() - last_check < TCP_CHECK_MS)
+        return true;
+    last_check = millis();
+    conn = tcp.connected();
+    if(!conn && millis() - last_try >= TCP_RETRY_MS) {
         last_try = millis();
         tcp.stop();
         if(tcp.connect(WiFi.gatewayIP(), BRIDGE_LINK_PORT, TCP_CONNECT_MS))
             tcp.setNoDelay(true);
+        conn = tcp.connected();
     }
 
-    return tcp.connected();
+    return conn;
 }
 
 static void usb_task (void *arg)
@@ -117,8 +128,10 @@ static void usb_task (void *arg)
     char gp_line[128];
     size_t n, gp_len = 0;
     bool udp_open = false;
+    uint32_t idle = 1;
 
     for(;;) {
+        bool moved = false;             // any data this round: then the next round comes after 1 ms
         bool usb = tud_mounted() && tud_cdc_n_connected(CH_LINK);
         bool wifi = !usb && wifi_machine();     // nothing over WiFi while the cable is in
         bool net = net_update(wifi);
@@ -149,13 +162,16 @@ static void usb_task (void *arg)
                 n = tcp.read(buf, sizeof(buf));
             else
                 n = 0;
-            if(n > 0 && n <= sizeof(buf))
+            if(n > 0 && n <= sizeof(buf)) {
                 xStreamBufferSend(rx_buf, buf, n, 0);
+                moved = true;
+            }
         }
 
         // display -> controller, dropped while there is no path
         n = usb ? min(sizeof(buf), (size_t)tud_cdc_n_write_available(CH_LINK)) : sizeof(buf);
         if(n && (n = xStreamBufferReceive(tx_buf, buf, n, 0)) > 0) {
+            moved = true;
             if(usb) {
                 tud_cdc_n_write(CH_LINK, buf, n);
                 tud_cdc_n_write_flush(CH_LINK);
@@ -167,6 +183,7 @@ static void usb_task (void *arg)
         if((n = tud_cdc_n_read(CH_GAMEPAD, buf, sizeof(buf))) > 0 && GAMEPAD) {
             gp_uart.write(buf, n);
             gp_to_d1 += n;
+            moved = true;
         }
         if(udp_open && udp.parsePacket() > 0) {
             int r = udp.read(buf, sizeof(buf));
@@ -174,11 +191,13 @@ static void usb_task (void *arg)
                 gp_uart.write(buf, r);
                 gp_to_d1 += r;
             }
+            moved = true;
         }
 
         // gamepad: D1 Mini -> controller, over WiFi one datagram per line
         int avail = GAMEPAD ? gp_uart.available() : 0;
         if(avail > 0) {
+            moved = true;
             n = gp_uart.read(buf, min((size_t)avail, sizeof(buf)));
             gp_from_d1 += n;
             if(usb) {
@@ -202,7 +221,10 @@ static void usb_task (void *arg)
             }
         }
 
-        vTaskDelay(1);
+        // 1 ms while data flows, then 2 and up to IDLE_MAX_MS: fewer socket calls while nothing happens,
+        // a new line waits at most IDLE_MAX_MS (status comes every 100 ms, the gamepad every 50 ms)
+        idle = moved ? 1 : min(idle * 2, (uint32_t)IDLE_MAX_MS);
+        vTaskDelay(pdMS_TO_TICKS(idle) ? pdMS_TO_TICKS(idle) : 1);
     }
 }
 

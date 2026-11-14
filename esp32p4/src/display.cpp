@@ -74,8 +74,13 @@ static bool IRAM_ATTR trans_done (esp_lcd_panel_handle_t p, esp_lcd_dpi_panel_ev
     return false;
 }
 
+static uint32_t flushed_px = 0;         // pixels copied into the frame buffer, for display_report()
+static uint16_t strip_lines = 0;
+static bool strip_psram = false;
+
 static void flush (lv_display_t *disp, const lv_area_t *a, uint8_t *px)
 {
+    flushed_px += (uint32_t)lv_area_get_width(a) * lv_area_get_height(a);
     if(panel == NULL || esp_lcd_panel_draw_bitmap(panel, a->x1, a->y1, a->x2 + 1, a->y2 + 1, px) != ESP_OK)
         lv_display_flush_ready(disp);
 }
@@ -193,10 +198,16 @@ void display_poll (void)
 
 void display_report (void)
 {
-    Serial.printf("display: %u underruns, %u resyncs, pixel clock %u MHz, strips of %u lines in %s\n",
-                  (unsigned)underruns, (unsigned)resyncs, DPI_MHZ,
-                  (unsigned)(lv_display_get_buf_active(disp_lv) ? lv_display_get_buf_active(disp_lv)->header.h : 0),
-                  esp_ptr_external_ram(lv_display_get_buf_active(disp_lv) ? lv_display_get_buf_active(disp_lv)->data : NULL) ? "PSRAM" : "internal RAM");
+    static uint32_t last_ms = 0, last_px = 0;
+    uint32_t now = millis(), px = flushed_px;
+    uint32_t rate = now != last_ms ? (uint32_t)((uint64_t)(px - last_px) * 1000 / (now - last_ms)) : 0;
+    last_ms = now;
+    last_px = px;
+
+    Serial.printf("display: %u underruns, %u resyncs, redrawn %lu px/s since the last status (screen %u px), "
+                  "pixel clock %u MHz, strips of %u lines in %s\n",
+                  (unsigned)underruns, (unsigned)resyncs, (unsigned long)rate, LCD_W * LCD_H, DPI_MHZ,
+                  (unsigned)strip_lines, strip_psram ? "PSRAM" : "internal RAM");
 }
 
 void display_backlight (uint8_t pct)
@@ -242,12 +253,15 @@ lv_display_t *display_begin (void)
 
     // LVGL: two strips in internal RAM (in PSRAM if short), aligned for DMA
     size_t buf_size = LCD_W * BUF_LINES * 2;
+    strip_lines = BUF_LINES;
     void *buf1 = heap_caps_aligned_alloc(64, buf_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     void *buf2 = heap_caps_aligned_alloc(64, buf_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if(buf1 == NULL || buf2 == NULL) {
         heap_caps_free(buf1);
         heap_caps_free(buf2);
         buf_size = LCD_W * BUF_LINES_PSRAM * 2;
+        strip_lines = BUF_LINES_PSRAM;
+        strip_psram = true;
         buf1 = heap_caps_aligned_alloc(128, buf_size, MALLOC_CAP_SPIRAM);
         buf2 = heap_caps_aligned_alloc(128, buf_size, MALLOC_CAP_SPIRAM);
         Serial.println("display: draw buffers in PSRAM (internal RAM short)");

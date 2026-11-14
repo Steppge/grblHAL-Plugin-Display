@@ -254,12 +254,41 @@ static void set_text (lv_obj_t *l, const char *text)
         lv_label_set_text(l, text);
 }
 
+// Only a real change: LVGL redraws an object on every remove of HIDDEN, also when it was visible already,
+// and ui_update() runs about 10 times a second (that kept large areas redrawing and loaded the PSRAM).
 static void show (lv_obj_t *o, bool on)
 {
+    if(on == !lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN))
+        return;
     if(on)
         lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
     else
         lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Style setters for ui_update(): LVGL redraws on every set, also with the same value
+static void text_color (lv_obj_t *o, lv_color_t c)
+{
+    if(!lv_color_eq(lv_obj_get_style_text_color(o, 0), c))
+        lv_obj_set_style_text_color(o, c, 0);
+}
+
+static void bg_color (lv_obj_t *o, lv_color_t c)
+{
+    if(!lv_color_eq(lv_obj_get_style_bg_color(o, 0), c))
+        lv_obj_set_style_bg_color(o, c, 0);
+}
+
+static void border_color (lv_obj_t *o, lv_color_t c)
+{
+    if(!lv_color_eq(lv_obj_get_style_border_color(o, 0), c))
+        lv_obj_set_style_border_color(o, c, 0);
+}
+
+static void bg_opa (lv_obj_t *o, lv_opa_t opa)
+{
+    if(lv_obj_get_style_bg_opa(o, 0) != opa)
+        lv_obj_set_style_bg_opa(o, opa, 0);
 }
 
 static void tap_track (lv_event_t *e)
@@ -2219,14 +2248,14 @@ static void update_topbar (void)
         else
             snprintf(buf, sizeof(buf), "%s %d%%", sym, p);
         set_text(lbl_batt, buf);
-        lv_obj_set_style_text_color(lbl_batt, C(p < 10 ? COL_RED1 : p < 20 ? COL_ORANGE1 : 0xEBEEFA), 0);
+        text_color(lbl_batt, C(p < 10 ? COL_RED1 : p < 20 ? COL_ORANGE1 : 0xEBEEFA));
     } else
         set_text(lbl_batt, "");
 
     // Bluetooth symbol while a gamepad controller is connected, red with its buttons enabled (Options)
     bool pad = mc.online && (mc.gp_flags & GP_CONNECTED);
     set_text(lbl_bt, pad ? LV_SYMBOL_BLUETOOTH : "");
-    lv_obj_set_style_text_color(lbl_bt, C(mc.gp_flags & GP_ENABLED ? COL_RED1 : COL_Z), 0);
+    text_color(lbl_bt, C(mc.gp_flags & GP_ENABLED ? COL_RED1 : COL_Z));
 
     link_path_t lp = usb_link_path();
     set_text(lbl_link, !mc.online ? LV_SYMBOL_CLOSE : lp == Path_Usb ? LV_SYMBOL_USB : lp == Path_Wifi ? LV_SYMBOL_WIFI : LV_SYMBOL_OK);
@@ -2237,10 +2266,10 @@ static void update_topbar (void)
     bool sender = wifi_sender();
     wifi_state_t home = wifi_home_state();
     set_text(lbl_wifi, sender || (wifi_cfg.enabled && *wifi_cfg.ssid) ? LV_SYMBOL_WIFI : "");
-    lv_obj_set_style_bg_opa(lbl_wifi, sender ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_text_color(lbl_wifi, C(sender ? COL_BG2 : home == Wifi_Connected ? COL_GREEN1 :
-                                             home == Wifi_Connecting ? COL_ORANGE1 : 0x50506E), 0);
-    lv_obj_set_style_text_color(lbl_link, C(mc.online ? COL_GREEN1 : COL_RED1), 0);
+    bg_opa(lbl_wifi, sender ? LV_OPA_COVER : LV_OPA_TRANSP);
+    text_color(lbl_wifi, C(sender ? COL_BG2 : home == Wifi_Connected ? COL_GREEN1 :
+                           home == Wifi_Connecting ? COL_ORANGE1 : 0x50506E));
+    text_color(lbl_link, C(mc.online ? COL_GREEN1 : COL_RED1));
 }
 
 static void update_main_buttons (void)
@@ -2327,7 +2356,9 @@ static void update_main (void)
         bool sd = mc.pct >= 0;
         show(prog_track, sd);
         if(sd) {
-            lv_obj_set_width(prog_fill, (SIDE_W - 36) * mc.pct / 1000);
+            int w = (SIDE_W - 36) * mc.pct / 1000;
+            if(lv_obj_get_style_width(prog_fill, 0) != w)
+                lv_obj_set_width(prog_fill, w);
             if(mc.pct >= 20 && job_secs >= 10) {
                 // elapsed of the estimated total, and when it ends (or the time left without a clock)
                 uint32_t left = (uint32_t)((uint64_t)job_secs * (1000 - mc.pct) / mc.pct);
@@ -2405,17 +2436,17 @@ static void update_zoom (void)
 
     if(hold_done) {
         btn_set(b_stop, LV_SYMBOL_CLOSE, "ABORT", COL_RED1, COL_RED2, A_ZoomStop);
-        lv_obj_set_style_border_color(b_stop->obj, C(0xFFFFFF), 0);
+        border_color(b_stop->obj, C(0xFFFFFF));
         strcpy(buf, (mc.flags & DL_FLAG_SPINDLE_ON) ? "Stopped" : "Stopped  -  laser off");
-        lv_obj_set_style_bg_color(zoom_dot, C(COL_ORANGE1), 0);
+        bg_color(zoom_dot, C(COL_ORANGE1));
     } else {
         btn_set(b_stop, LV_SYMBOL_STOP, "STOP", COL_RED1, COL_RED2, A_ZoomStop);
-        lv_obj_set_style_border_color(b_stop->obj, C(0xFFC8C8), 0);
+        border_color(b_stop->obj, C(0xFFC8C8));
         if(mc.pct >= 0)
             snprintf(buf, sizeof(buf), "%d %%  -  %lu:%02lu", mc.pct / 10, job_secs / 60, job_secs % 60);
         else
             snprintf(buf, sizeof(buf), "X %.1f  Y %.1f", mc.wpos[0], mc.wpos[1]);
-        lv_obj_set_style_bg_color(zoom_dot, C(mc.state & STATE_HOLD ? COL_ORANGE1 : COL_RING1), 0);
+        bg_color(zoom_dot, C(mc.state & STATE_HOLD ? COL_ORANGE1 : COL_RING1));
     }
     b_stop->tap_on_press = true;
     set_text(zoom_lbl, buf);
