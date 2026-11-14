@@ -89,3 +89,26 @@
 #ifndef GAMEPAD_BAUD
 #define GAMEPAD_BAUD    921600  // as the gamepad firmware of the D1 Mini
 #endif
+
+// ---------------------------------------------------------------- map, clock, battery run time
+
+// Directions of the map seen from the front of the machine: MAP_X_LEFT 1 = +X points to the left,
+// MAP_Y_DOWN 1 = +Y points to the operator (front). The defaults suit a machine homing to the back right.
+#ifndef MAP_X_LEFT
+#define MAP_X_LEFT      1
+#endif
+#ifndef MAP_Y_DOWN
+#define MAP_Y_DOWN      1
+#endif
+
+// Time zone of the clock as a POSIX TZ string, e.g. "GMT0BST,M3.5.0/1,M10.5.0" (UK), "EST5EDT,M3.2.0,M11.1.0" (US East)
+#ifndef TIME_TZ
+#define TIME_TZ         "CET-1CEST,M3.5.0,M10.5.0/3"    // Central Europe with summer time
+#endif
+
+// Battery: run time in minutes of a full charge, display on (battery.cpp). The voltage table in battery.cpp
+// is the discharge curve of a 1S Li-ion pack (6 x 18650 here); log your own with the console command
+// "battlog on" (one line a minute) and "battlog dump" if your pack differs.
+#ifndef BATT_RUN_MIN
+#define BATT_RUN_MIN    488
+#endif

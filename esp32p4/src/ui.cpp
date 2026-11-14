@@ -429,6 +429,11 @@ static void btn_layout (ui_btn_t *b)
 static ui_btn_t *btn (lv_obj_t *parent, int x, int y, int w, int h, int r, const char *icon, const char *text,
                       uint32_t c1, uint32_t c2, int tap, int hold = A_None, uint16_t hold_ms = LONG_PRESS_MS)
 {
+    // more buttons than btns[] holds: the last one is reused (the screen is wrong, but no memory is overwritten)
+    if(n_btns >= N_VAL(btns)) {
+        Serial.println("ui: btns[] is full, make it larger");
+        n_btns = N_VAL(btns) - 1;
+    }
     ui_btn_t *b = &btns[n_btns++];
 
     b->obj = glass(parent, x, y, w, h, r);
@@ -1615,7 +1620,7 @@ static void update_edit (void)
     btn_enable(b_minus, st->type == Fmt_Decimal || st->type == Fmt_Integer);
 
     // after saving: ask for the value again and report whether it was taken
-    if(set_verify_at && millis() >= set_verify_at) {
+    if(set_verify_at && (int32_t)(millis() - set_verify_at) >= 0) {
         set_verify_at = 0;
         link_setting(st->id);
     }
@@ -1930,7 +1935,7 @@ static void update_gamepad (void)
     }
 
     // after a change: read all assignments again, another function may have lost its button
-    if(gp_verify_at && millis() >= gp_verify_at && link_idle()) {
+    if(gp_verify_at && (int32_t)(millis() - gp_verify_at) >= 0 && link_idle()) {
         gp_verify_at = 0;
         for(int f = 0; f < GP_FUNCTIONS; f++)
             link_setting(GP_SETTING_FIRST + f);
@@ -1948,7 +1953,7 @@ static void update_gamepad (void)
             banner_show("No gamepad", COL_ORANGE2, 3000);
         else
             gp_assign(f, mc.gp_key);
-    } else if(millis() >= gp_learn_until || !mc.online) {
+    } else if((int32_t)(millis() - gp_learn_until) >= 0 || !mc.online) {
         link_send("GL,0");
         gp_learn_fn = -1;
         show(gp_learn_box, false);
@@ -3012,7 +3017,7 @@ void ui_update (void)
         banner_show(buf, COL_ORANGE2, 4000);
         beep(3);
     }
-    if(banner_until && millis() >= banner_until) {
+    if(banner_until && (int32_t)(millis() - banner_until) >= 0) {
         banner_until = 0;
         banner_hide();
     }

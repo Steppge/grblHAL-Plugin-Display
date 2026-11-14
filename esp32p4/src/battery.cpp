@@ -168,7 +168,7 @@ int battery_percent (void)
 
 // Remaining minutes: from the drop of the last RATE_MIN minutes, else (too short, or on the flat part at the
 // top) from the logged run time. -1 while charging.
-#define RUN_MIN         488     // logged run time in CNC mode, display on
+#define RUN_MIN         BATT_RUN_MIN    // logged run time in CNC mode, display on (display_config.h)
 #define RATE_MIN        30      // minutes of history
 #define RATE_MIN_USED   20      // at least this many for the measured drop
 

@@ -24,6 +24,16 @@
   v1.0 - gamepad button learn mode (>GL, $GK), released together with the display firmware 1.0
          (web interface, firmware update in the browser).
   v1.1 - pairing a gamepad controller from the display (>GP, $GS).
+  v1.2 - $BRIDGE: firmware update of the Octopus-Bridge with bridge.bin from the SD card; a repeated
+         command line (same id) is acknowledged but not run twice; command lines up to 127 characters.
+
+  Firmware update of the Octopus-Bridge (ESP32-S3 between display and controller, bridge 0.4 or newer):
+  $BRIDGE sends /bridge.bin from the SD card over the display link UART in blocks of DL_FW_BLOCK bytes,
+  each one acknowledged by the bridge. Only while idle or in an alarm; no status lines meanwhile.
+
+    $FW,<size>,<crc32 hex>*<hh>   start, then the image          >FA,<1|0>*<hh>   ready / refused
+                                                                 >FK,<bytes>*<hh> block written
+                                                                 >FD,<1|0>*<hh>   done (the bridge restarts) / failed
 
   An ESP32-S3 with an MKS TS35 (see esp32s3/) is connected to a serial port of the controller
   board (DISPLAY_LINK_STREAM; BTT Octopus Pro: USART2 = PD5 TX2 / PD6 RX2 header next to USB-C, stream instance 1).
@@ -118,7 +128,7 @@
 #include "sdcard/fs_stream.h"
 #endif
 
-#define DL_VERSION "1.1"
+#define DL_VERSION "1.2"
 
 #ifndef DISPLAY_LINK_STREAM
 #define DISPLAY_LINK_STREAM     1
@@ -636,6 +646,203 @@ static void pv_poll (sys_state_t state)
 #endif // SDCARD_ENABLE
 
 // ------------------------------------------------------------------------
+// Firmware update of the Octopus-Bridge from the SD card ($BRIDGE)
+// ------------------------------------------------------------------------
+
+#define DL_FW_FILE      "/bridge.bin"
+#define DL_FW_BLOCK     1024        // as FW_BLOCK in the bridge
+#define DL_FW_HELLO_MS  1000        // >FA expected within this time, asked again up to DL_FW_TRIES times
+#define DL_FW_TRIES        5
+#define DL_FW_ACK_MS    3000        // per block (the bridge erases flash meanwhile)
+#define DL_FW_END_MS   10000        // image check at the end
+
+typedef enum { Fw_Off, Fw_Hello, Fw_Send, Fw_Wait, Fw_End } fw_phase_t;
+
+static struct {
+    fw_phase_t phase;
+    uint32_t size, sent, crc, t0;
+    uint8_t tries, pct;
+#if SDCARD_ENABLE
+    vfs_file_t *file;
+#endif
+} fw = {0};
+
+static bool fw_busy (void)
+{
+    return fw.phase != Fw_Off;
+}
+
+static void fw_stop (const char *text)
+{
+#if SDCARD_ENABLE
+    if(fw.file)
+        vfs_close(fw.file);
+    fw.file = NULL;
+#endif
+    fw.phase = Fw_Off;
+    report_message(text, Message_Info);
+}
+
+#if SDCARD_ENABLE
+
+// CRC-32 as zlib / esp_rom_crc32_le(0, ...)
+static uint32_t crc32_add (uint32_t crc, const uint8_t *p, size_t n)
+{
+    crc = ~crc;
+    while(n--) {
+        crc ^= *p++;
+        for(uint_fast8_t k = 0; k < 8; k++)
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+    return ~crc;
+}
+
+static void fw_hello (void)
+{
+    char body[40];
+
+    snprintf(body, sizeof(body), "FW,%lu,%08lx", (unsigned long)fw.size, (unsigned long)fw.crc);
+    send_line(body);
+    fw.t0 = hal.get_elapsed_ticks();
+}
+
+static status_code_t fw_command (sys_state_t state, char *args)
+{
+    vfs_stat_t st;
+    uint8_t buf[256];
+    size_t n;
+
+    if(dl_stream == NULL)
+        return Status_InvalidStatement;
+    if(fw_busy())
+        return Status_IdleError;
+    if(!(state == STATE_IDLE || (state & STATE_ALARM)))
+        return Status_IdleError;
+    if(!sdcard_getfs())
+        return Status_SDNotMounted;
+    if(vfs_stat(DL_FW_FILE, &st) != 0 || st.st_size == 0 || (fw.file = vfs_open(DL_FW_FILE, "r")) == NULL)
+        return Status_FileOpenFailed;
+
+    // CRC over the whole file first (about a second for 1 MB), then from the start again
+    fw.crc = 0;
+    while((n = vfs_read(buf, 1, sizeof(buf), fw.file)) > 0)
+        fw.crc = crc32_add(fw.crc, buf, n);
+    vfs_seek(fw.file, 0);
+
+    fw.size = st.st_size;
+    fw.sent = 0;
+    fw.tries = 1;
+    fw.pct = 0;
+    fw.phase = Fw_Hello;
+    fw_hello();
+    report_message("Bridge update: started, the display link pauses", Message_Info);
+
+    return Status_OK;
+}
+
+// called from the realtime handler while an update runs
+static void fw_poll (void)
+{
+    uint32_t now = hal.get_elapsed_ticks();
+
+    switch(fw.phase) {
+
+        case Fw_Hello:
+            if(now - fw.t0 >= DL_FW_HELLO_MS) {
+                if(++fw.tries > DL_FW_TRIES)
+                    fw_stop("Bridge update: no answer (bridge firmware before 0.4? flash it once over USB)");
+                else
+                    fw_hello();
+            }
+            break;
+
+        case Fw_Send: {
+            // The driver waits for room in its small TX buffer and runs the realtime handlers meanwhile, so
+            // this function is entered again while the block is being written: the phase is Fw_Wait before
+            // the first byte goes out, and a guard keeps a second block from starting in between.
+            static uint8_t block[DL_FW_BLOCK];
+            static bool writing = false;
+            if(writing)
+                break;
+            size_t want = fw.size - fw.sent < DL_FW_BLOCK ? fw.size - fw.sent : DL_FW_BLOCK;
+            if(vfs_read(block, 1, want, fw.file) != want) {
+                fw_stop("Bridge update: read error");
+                break;
+            }
+            fw.phase = Fw_Wait;
+            fw.t0 = now;
+            writing = true;
+            if(dl_stream->write_n)
+                dl_stream->write_n(block, (uint16_t)want);
+            else for(size_t i = 0; i < want; i++)
+                dl_stream->write_char(block[i]);
+            writing = false;
+            fw.t0 = hal.get_elapsed_ticks();    // the answer is timed from the end of the block
+            break;
+        }
+
+        case Fw_Wait:
+            if(now - fw.t0 >= DL_FW_ACK_MS)
+                fw_stop("Bridge update: no answer to a block");
+            break;
+
+        case Fw_End:
+            if(now - fw.t0 >= DL_FW_END_MS)
+                fw_stop("Bridge update: no answer at the end");
+            break;
+
+        default:
+            break;
+    }
+}
+
+// >FA, >FK, >FD from the bridge
+static void fw_answer (const char *line)
+{
+    char text[48];
+
+    if(!fw_busy())
+        return;
+
+    if(!strncmp(line, "FA,", 3) && fw.phase == Fw_Hello) {
+        if(line[3] == '1')
+            fw.phase = Fw_Send;
+        else
+            fw_stop("Bridge update: refused by the bridge");
+    } else if(!strncmp(line, "FK,", 3) && fw.phase == Fw_Wait) {
+        uint32_t got = strtoul(line + 3, NULL, 10);
+        size_t want = fw.size - fw.sent < DL_FW_BLOCK ? fw.size - fw.sent : DL_FW_BLOCK;
+        if(got != fw.sent + want) {
+            fw_stop("Bridge update: out of step");
+            return;
+        }
+        fw.sent = got;
+        uint8_t pct = (uint8_t)((uint64_t)fw.sent * 100 / fw.size);
+        if(pct / 10 != fw.pct / 10) {
+            snprintf(text, sizeof(text), "Bridge update: %u %%", pct);
+            report_message(text, Message_Info);
+        }
+        fw.pct = pct;
+        fw.phase = fw.sent == fw.size ? Fw_End : Fw_Send;
+        fw.t0 = hal.get_elapsed_ticks();
+    } else if(!strncmp(line, "FD,", 3)) {
+        fw_stop(line[3] == '1' ? "Bridge update: done, the bridge restarts" : "Bridge update: failed (image check)");
+    }
+}
+
+#else
+
+static void fw_poll (void)
+{
+}
+
+static void fw_answer (const char *line)
+{
+}
+
+#endif // SDCARD_ENABLE
+
+// ------------------------------------------------------------------------
 // Errors and settings
 // ------------------------------------------------------------------------
 
@@ -903,11 +1110,15 @@ static void handle_line (char *line)
         gamepad_pair((uint8_t)(line[3] - '0'));
         gamepad_report(true);
     }
+
+    else if(!strncmp(line, "FA,", 3) || !strncmp(line, "FK,", 3) || !strncmp(line, "FD,", 3))
+        fw_answer(line);    // answers of the Octopus-Bridge during $BRIDGE
 }
 
 static void receive (void)
 {
-    static char line[100];
+    // GC,<id>,<command line of up to 95 characters (queue of the display)>*hh fits
+    static char line[128];
     static uint8_t len = 0;
     int32_t c;
 
@@ -1026,6 +1237,13 @@ static void dl_realtime (sys_state_t state)
     on_execute_realtime(state);
 
     receive();
+
+    // bridge update: the UART carries only the image, no status lines meanwhile
+    if(fw_busy()) {
+        fw_poll();
+        return;
+    }
+
     pulse_poll(state);
     pv_poll(state);
     settings_poll();
@@ -1084,6 +1302,17 @@ void display_link_init (void)
 
     prev_status_message = grbl.report.status_message;
     grbl.report.status_message = dl_status_message;
+
+#if SDCARD_ENABLE
+    static const sys_command_t dl_command_list[] = {
+        { "BRIDGE", fw_command, { .noargs = 1 }, { .str = "update the Octopus-Bridge with bridge.bin from the SD card" } },
+    };
+    static sys_commands_t dl_commands = {
+        .n_commands = sizeof(dl_command_list) / sizeof(sys_command_t),
+        .commands = dl_command_list
+    };
+    system_register_commands(&dl_commands);
+#endif
 }
 
 #endif // DISPLAY_LINK_ENABLE

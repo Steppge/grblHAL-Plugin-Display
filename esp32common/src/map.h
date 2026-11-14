@@ -2,8 +2,16 @@
 
 #include <Arduino.h>
 
+#if __has_include("display_config.h")
+#include "display_config.h"     // ESP32-P4: the map directions can be set there
+#endif
+
+#ifndef MAP_Y_DOWN
 #define MAP_Y_DOWN      1       // 1: +Y points to the operator (front), drawn downwards; 0: +Y upwards
+#endif
+#ifndef MAP_X_LEFT
 #define MAP_X_LEFT      1       // 1: +X points to the left (seen from the front), 0: +X to the right
+#endif
 
 // What has been burned/cut: the tool path while the spindle/laser was on, in machine coordinates.
 

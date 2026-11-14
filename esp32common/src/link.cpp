@@ -92,7 +92,7 @@ static void queue_poll (uint32_t now)
     if(q_await && now - q_sent < CMD_ACK_MS)
         return;
 
-    if(!q_await && now < q_wait)
+    if(!q_await && (int32_t)(now - q_wait) < 0)
         return;
 
     if(++q_tries > CMD_TRIES) {

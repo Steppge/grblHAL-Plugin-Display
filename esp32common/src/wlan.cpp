@@ -130,7 +130,9 @@ static bool use_machine (void)
     return *m_ssid && machine_ok && !home_mode && !deck_mode && !time_boot;
 }
 
+#ifndef TIME_TZ                 // POSIX time zone, can be set in display_config.h
 #define TIME_TZ         "CET-1CEST,M3.5.0,M10.5.0/3"   // Germany, summer time
+#endif
 #define TIME_RESYNC_MS  (12UL * 3600 * 1000)
 
 static bool update_mode = false;
@@ -444,7 +446,7 @@ void wifi_poll (bool updates_allowed)
     if(scanning || scan_paused)
         ;
     else if(begin_pending) {
-        if(millis() - begin_at >= WIFI_SETTLE_MS && millis() >= boot_end + WIFI_BOOT_MS)
+        if(millis() - begin_at >= WIFI_SETTLE_MS && (int32_t)(millis() - boot_end - WIFI_BOOT_MS) >= 0)
             begin_now();
         return;
     } else if(state == Wifi_Connecting && millis() - connecting_since >= WIFI_RETRY_MS) {
