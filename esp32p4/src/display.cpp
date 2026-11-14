@@ -37,15 +37,20 @@ static volatile bool underrun = false;
 static uint32_t underruns = 0, resyncs = 0;
 
 // esp_rom_printf, which the IDF uses in interrupts, goes through here: watch for the underrun message
+// "E lcd.dsi: can't fetch data from external memory fast enough, underrun happens" (esp_lcd, mipi_dsi DPI
+// interrupt). The IDF has no callback for it. Two parts of the text are watched, so a small change of the
+// wording in a newer framework still triggers; after a framework update check it with the console
+// command "resync" and "status" (underruns, resyncs).
 static void IRAM_ATTR rom_putc (char c)
 {
-    static const char key[] = "underrun";
-    static uint8_t pos = 0;
+    static const char key1[] = "underrun", key2[] = "fast enough";
+    static uint8_t pos1 = 0, pos2 = 0;
 
-    pos = c == key[pos] ? pos + 1 : (c == key[0] ? 1 : 0);
-    if(key[pos] == '\0') {
+    pos1 = c == key1[pos1] ? pos1 + 1 : (c == key1[0] ? 1 : 0);
+    pos2 = c == key2[pos2] ? pos2 + 1 : (c == key2[0] ? 1 : 0);
+    if(key1[pos1] == '\0' || key2[pos2] == '\0') {
         underrun = true;
-        pos = 0;
+        pos1 = pos2 = 0;
     }
     esp_rom_output_putc(c);
 }

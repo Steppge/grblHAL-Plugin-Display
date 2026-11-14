@@ -2049,9 +2049,30 @@ const char *ui_selected_file (void)
     return sd_sel;
 }
 
+// Settings are written SAVE_DELAY_MS after the last change and only when they differ from the stored ones:
+// writing the flash stalls the PSRAM for a moment (video underrun), a tap on a button must not do that.
+#define SAVE_DELAY_MS   2000
+static uint32_t save_at = 0;        // 0 = nothing to save
+
 static void save_cfg (void)
 {
-    prefs.putBytes("cfg", &cfg, sizeof(cfg));
+    save_at = millis() | 1;
+}
+
+static void save_poll (void)
+{
+    if(!save_at || millis() - save_at < SAVE_DELAY_MS)
+        return;
+    save_at = 0;
+
+    decltype(cfg) stored = {};
+    if(prefs.getBytesLength("cfg") != sizeof(cfg) || prefs.getBytes("cfg", &stored, sizeof(stored)) != sizeof(stored) ||
+        memcmp(&stored, &cfg, sizeof(cfg)))
+        prefs.putBytes("cfg", &cfg, sizeof(cfg));
+    if(prefs.getUChar("gorder", 0) != goto_order)
+        prefs.putUChar("gorder", goto_order);
+    if(prefs.getBool("gmach", false) != goto_mach)
+        prefs.putBool("gmach", goto_mach);
 }
 
 static void jog (int axis, float dir)
@@ -2347,12 +2368,12 @@ static void action_run (int action, int arg)
         case A_GClr:        goto_set[goto_sel] = false; goto_fresh = true; break;     // back to "stays"
         case A_GOrder:
             goto_order = constrain(arg, 0, GOTO_ORDERS - 1);
-            prefs.putUChar("gorder", goto_order);
+            save_cfg();
             break;
         case A_GMach:
             if(goto_mach != !!arg) {
                 goto_mach = !!arg;
-                prefs.putBool("gmach", goto_mach);
+                save_cfg();
                 // to machine coordinates with a positive Z typed: shown with its minus as it will be sent
                 char *z = goto_val[2];
                 if(goto_mach && goto_set[2] && *z && *z != '-' && strtof(z, NULL) > 0.0f && strlen(z) < sizeof(goto_val[2]) - 1) {
@@ -2866,11 +2887,11 @@ static void update_screen (void)
                          lp == Path_Wifi ? "machine network" : "-", h);
                 set_text(wifi_status, buf);
             }
-            set_text(b_web->text, wifi_web_mode() == 2 ? "Web: Control" : wifi_web_mode() == 1 ? "Web: View" : "Web: Off");
-            btn_colors(b_web, wifi_web_mode() == 2 ? COL_ORANGE1 : 0, wifi_web_mode() == 2 ? COL_ORANGE2 : 0);
-            set_text(b_wifi_toggle->text, wifi_cfg.enabled ? "Home: On" : "Home: Off");
-            btn_layout(b_wifi_toggle);
-            btn_colors(b_wifi_toggle, wifi_cfg.enabled ? COL_GREEN1 : 0, wifi_cfg.enabled ? COL_GREEN2 : 0);
+            // btn_set() only changes what differs (no redraw of the buttons on every update)
+            btn_set(b_web, NULL, wifi_web_mode() == 2 ? "Web: Control" : wifi_web_mode() == 1 ? "Web: View" : "Web: Off",
+                    wifi_web_mode() == 2 ? COL_ORANGE1 : 0, wifi_web_mode() == 2 ? COL_ORANGE2 : 0, A_WebMode);
+            btn_set(b_wifi_toggle, LV_SYMBOL_POWER, wifi_cfg.enabled ? "Home: On" : "Home: Off",
+                    wifi_cfg.enabled ? COL_GREEN1 : 0, wifi_cfg.enabled ? COL_GREEN2 : 0, A_WifiToggle);
             break;
 
         case S_SetGroups:
@@ -3007,6 +3028,7 @@ void ui_update (void)
 
     map_record();
     probe_poll();
+    save_poll();
     update_topbar();
     map_swap();
     update_screen();

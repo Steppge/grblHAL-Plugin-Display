@@ -1278,7 +1278,8 @@ static void handle_line (char *line)
         io->println("ACK");
     } else if(!strncmp(line, "BRI ", 4)) {
         int b = constrain(atoi(line + 4), 5, 255);
-        prefs.putUChar("bri", (uint8_t)b);
+        if(bri_normal() != b)                   // flash only for a new value
+            prefs.putUChar("bri", (uint8_t)b);
         if(mode_on)
             display_backlight(b * 100 / 255);
         io->println("ACK");
