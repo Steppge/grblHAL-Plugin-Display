@@ -1176,11 +1176,13 @@ static void goto_key (char c)
     }
 }
 
-// one G0 line per step of the chosen order, only with the typed axes; false if a typed value is no number
-static bool goto_send (void)
+// One G0 line per step of the chosen order, only with the typed axes. All lines or none: a missing step
+// (e.g. Z first) would make the others run at the wrong place. Returns NULL, or why nothing was sent.
+static const char *goto_send (void)
 {
     float t[3];
-    char cmd[64];
+    char cmd[3][64];
+    int lines = 0;
 
     for(int i = 0; i < 3; i++) {
         if(!goto_set[i])
@@ -1188,24 +1190,45 @@ static bool goto_send (void)
         char *end;
         t[i] = strtof(goto_val[i], &end);
         if(end == goto_val[i] || *end)
-            return false;
+            return "Not a number - check the values";
     }
     if(goto_mach && goto_set[2] && t[2] > 0.0f)     // machine Z is never above 0
         t[2] = -t[2];
+
+    // homed: the target must lie in the machine area (X, Y from the work envelope, Z from its lower end and the travel)
+    if(mc.env_valid) {
+        static const char *const out[3] = { "X is outside the machine area", "Y is outside the machine area",
+                                            "Z is outside the machine area" };
+        for(int i = 0; i < 3; i++) {
+            if(!goto_set[i])
+                continue;
+            float m = goto_mach ? t[i] : t[i] + mc.mpos[i] - mc.wpos[i];
+            float lo = mc.env_min[i], hi = i < 2 ? mc.env_max[i] : mc.env_min[2] + mc.travel[2];
+            if(i == 2 && mc.travel[2] <= 1.0f)
+                continue;       // Z travel not known
+            if(m < lo - 0.01f || m > hi + 0.01f)
+                return out[i];
+        }
+    }
+
     for(int s = 0; s < 3 && goto_order_steps[goto_order][s]; s++) {
-        int n = snprintf(cmd, sizeof(cmd), goto_mach ? "G53G0" : "G90G0");
+        int n = snprintf(cmd[lines], sizeof(cmd[0]), goto_mach ? "G53G0" : "G90G0");
         bool any = false;
         for(const char *a = goto_order_steps[goto_order][s]; *a; a++) {
             int i = *a - 'X';
             if(goto_set[i]) {
-                n += snprintf(cmd + n, sizeof(cmd) - n, "%c%.3f", *a, t[i]);
+                n += snprintf(cmd[lines] + n, sizeof(cmd[0]) - n, "%c%.3f", *a, t[i]);
                 any = true;
             }
         }
         if(any)
-            link_cmd(cmd);
+            lines++;
     }
-    return true;
+    if(link_free() < lines)
+        return "Not sent: no connection or busy";
+    for(int k = 0; k < lines; k++)
+        link_cmd(cmd[k]);
+    return NULL;
 }
 
 static void update_goto (void)
@@ -2057,9 +2080,13 @@ static void probe_start (void)
         return;
     }
 
+    // absolute target: no G91 that would stay set when the probe ends in an alarm
     char cmd[48];
-    snprintf(cmd, sizeof(cmd), "G91G38.2Z-%.3fF%u", dist, probe_feed_val[cfg.probe_feed]);
-    link_cmd(cmd);
+    snprintf(cmd, sizeof(cmd), "G90G38.2Z%.3fF%u", mc.wpos[2] - dist, probe_feed_val[cfg.probe_feed]);
+    if(!link_cmd(cmd)) {
+        strcpy(msg, "Not sent: no connection or busy");
+        return;
+    }
     probe_seq = P_Start;
     probe_t0 = millis();
     strcpy(msg, "Probing...");
@@ -2083,7 +2110,6 @@ static void probe_poll (void)
                 probe_seq = P_Busy;
             else if(link_idle() && millis() - probe_t0 > 1500) {
                 probe_seq = P_Off;
-                link_cmd("G90");
                 strcpy(msg, "Probe command rejected");
             }
             break;
@@ -2091,17 +2117,19 @@ static void probe_poll (void)
         case P_Busy:
             if(mc.state == STATE_IDLE) {
                 if(mc.flags & DL_FLAG_PROBE_OK) {
+                    // Z is the plate thickness now, the retract goes to an absolute height above it
                     char cmd[48];
-                    link_cmd("G90");
                     snprintf(cmd, sizeof(cmd), "G10L20P0Z%.3f", cfg.plate);
-                    link_cmd(cmd);
-                    snprintf(cmd, sizeof(cmd), "G91G0Z%.1f", PROBE_RETRACT);
-                    link_cmd(cmd);
-                    link_cmd("G90");
-                    probe_seq = P_Done;
+                    bool sent = link_free() >= 2 && link_cmd(cmd);
+                    snprintf(cmd, sizeof(cmd), "G90G0Z%.3f", cfg.plate + PROBE_RETRACT);
+                    if(sent && link_cmd(cmd))
+                        probe_seq = P_Done;
+                    else {
+                        probe_seq = P_Off;
+                        strcpy(msg, "Contact, but Z0 not set (no connection)");
+                    }
                 } else {
                     probe_seq = P_Off;
-                    link_cmd("G90");
                     strcpy(msg, "No contact");
                 }
             }
@@ -2333,12 +2361,14 @@ static void action_run (int action, int arg)
                 }
             }
             break;
-        case A_GGo:
-            if(goto_send())
+        case A_GGo: {
+            const char *why = goto_send();
+            if(why == NULL)
                 screen_show(S_Main);
             else
-                banner_show("Not a number - check the values", COL_ORANGE2, 3000);
+                banner_show(why, COL_ORANGE2, 3000);
             break;
+        }
         case A_ScrProbe:    screen_show(S_Probe); break;
         case A_ScrLaser:    screen_show(S_Laser); break;
         case A_ScrSd:       screen_show(S_Sd); break;

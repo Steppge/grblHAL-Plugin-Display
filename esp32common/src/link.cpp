@@ -51,9 +51,11 @@ void link_rt (uint8_t cmd)
     link_send(body);
 }
 
+// Only while the controller is connected: a line queued without a connection would run whenever the
+// connection comes back, maybe minutes later.
 bool link_cmd (const char *line)
 {
-    if(q_count == CMD_QUEUE)
+    if(q_count == CMD_QUEUE || !mc.online)
         return false;
 
     uint8_t i = (q_head + q_count) % CMD_QUEUE;
@@ -67,6 +69,11 @@ bool link_cmd (const char *line)
 bool link_idle (void)
 {
     return q_count == 0;
+}
+
+int link_free (void)
+{
+    return mc.online ? CMD_QUEUE - q_count : 0;
 }
 
 static void queue_pop (void)
@@ -333,6 +340,7 @@ void link_preview (const char *name)
 void link_begin (void)
 {
     setlist.item = (setting_t *)ps_calloc(SETTINGS_MAX, sizeof(setting_t));
+    next_id = (uint16_t)(esp_random() | 1);     // not the ids of before a restart (the controller remembers the last one)
 #ifdef PIN_LINK_TX                  // the P4 display has no UART link, only USB and WiFi (link_use)
     uart.setRxBufferSize(8192);     // preview rows arrive in bursts while LVGL is drawing
     uart.begin(LINK_BAUD, SERIAL_8N1, PIN_LINK_RX, PIN_LINK_TX);
@@ -373,6 +381,14 @@ void link_poll (void)
             Serial.printf("[%lu] link: offline\n", (unsigned long)now);
         mc.online = false;
         mc.gp_flags = mc.gp_pair = 0;
+        // waiting command lines are dropped and reported, they must not run after a reconnect
+        if(q_count) {
+            Serial.printf("link: offline, %u command line(s) dropped\n", q_count);
+            snprintf(mc.refused, sizeof(mc.refused), "connection lost (%u dropped)", q_count);
+            mc.refused_seq++;
+            q_head = q_count = q_tries = 0;
+            q_await = false;
+        }
     }
 
     static uint32_t last_hb = 0;

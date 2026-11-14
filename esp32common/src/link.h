@@ -163,5 +163,6 @@ void link_poll (void);
 void link_rt (uint8_t cmd);
 bool link_cmd (const char *line);   // queued, sent again until the controller has accepted it
 bool link_idle (void);              // all queued command lines have been accepted
+int link_free (void);               // command lines link_cmd() takes now, 0 without a connection
 void link_send (const char *body);  // other requests: "FL", "LF,<pct>,<ms>"
 extern bool link_log;               // lines to the controller on the console (linklog on|off)

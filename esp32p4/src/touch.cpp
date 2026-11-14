@@ -10,6 +10,7 @@
 #define REG_PRODUCT_ID  0x8140
 #define REG_STATUS      0x814E      // bit 7: new data, bits 0-3: number of points
 #define REG_POINT1      0x8150      // x low, x high, y low, y high, ...
+#define TOUCH_LOST_MS   100         // no answer for this long: released
 
 static bool pressed = false;
 static int16_t last_x = 0, last_y = 0;
@@ -66,10 +67,12 @@ bool touch_begin (void)
 
 static void touch_read (lv_indev_t *indev, lv_indev_data_t *data)
 {
+    static uint32_t answered = 0;
     uint8_t status;
+    bool ok = reg_read(REG_STATUS, &status, 1);
 
     // without new data the last state stays
-    if(reg_read(REG_STATUS, &status, 1) && (status & 0x80)) {
+    if(ok && (status & 0x80)) {
         uint8_t pt[4];
         pressed = (status & 0x0F) > 0 && reg_read(REG_POINT1, pt, 4);
         if(pressed) {
@@ -78,6 +81,12 @@ static void touch_read (lv_indev_t *indev, lv_indev_data_t *data)
         }
         reg_write(REG_STATUS, 0);
     }
+
+    // the controller does not answer: a touch must not stay "pressed" (buttons that act on holding)
+    if(ok)
+        answered = millis();
+    else if(pressed && millis() - answered > TOUCH_LOST_MS)
+        pressed = false;
 
     data->point.x = last_x;
     data->point.y = last_y;

@@ -135,6 +135,7 @@
 #define DL_PERIOD_MS          100   // status line interval
 #define DL_INFO_MS           1000   // machine size and job name interval
 #define DL_TIMEOUT_MS        1000   // no valid line for this long = display not connected
+#define DL_REPEAT_MS         5000   // a command line with the id of the last accepted one is a repeat this long
 
 #define DL_FLAG_BLOCKING     0x01   // critical alarm (hard limit, e-stop) waits for a reset
 #define DL_FLAG_HOLD_DONE    0x02   // feed hold has come to a stop
@@ -845,7 +846,17 @@ static void handle_line (char *line)
     if(strtoul(star + 1, NULL, 16) != sum)
         return;
 
-    last_rx = hal.get_elapsed_ticks();
+    // The display sends a command line again when the answer does not arrive in time (slow WiFi). A line
+    // that has been accepted is only acknowledged again, never run twice: a relative move (jog step) would
+    // go double. The id is forgotten after DL_REPEAT_MS and when the display was away (it starts at a
+    // random id after a restart).
+    static char done_id[9] = "";
+    static uint32_t done_at = 0;
+    uint32_t now = hal.get_elapsed_ticks();
+
+    if(now - last_rx > DL_TIMEOUT_MS || now - done_at > DL_REPEAT_MS)
+        *done_id = '\0';
+    last_rx = now;
 
     if(!strncmp(line, "RT,", 3))
         grbl.enqueue_realtime_command((char)strtoul(line + 3, NULL, 16));
@@ -854,7 +865,13 @@ static void handle_line (char *line)
         char *id = line + 3, *cmd = strchr(id, ','), ack[24];
         if(cmd) {
             *cmd++ = '\0';
-            snprintf(ack, sizeof(ack), "AK,%.8s,%d", id, *cmd && grbl.enqueue_gcode(cmd) ? 1 : 0);
+            bool ok = *id && *done_id && !strncmp(id, done_id, sizeof(done_id) - 1);    // repeated: done already
+            if(!ok && (ok = *cmd && grbl.enqueue_gcode(cmd))) {
+                strncpy(done_id, id, sizeof(done_id) - 1);
+                done_id[sizeof(done_id) - 1] = '\0';
+                done_at = now;
+            }
+            snprintf(ack, sizeof(ack), "AK,%.8s,%d", id, ok ? 1 : 0);
             send_line(ack);
         }
     }
