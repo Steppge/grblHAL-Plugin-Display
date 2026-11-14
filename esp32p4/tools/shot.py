@@ -27,7 +27,7 @@ def main():
     ser.open()
     time.sleep(0.2)
     ser.reset_input_buffer()
-    ser.write(b"shot\n")
+    ser.write(b"\nshot\n")    # the newline ends a half line left by another program (e.g. the PC-Deck app)
 
     deadline = time.time() + 10
     while True:

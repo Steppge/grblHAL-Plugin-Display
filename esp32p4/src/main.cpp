@@ -62,7 +62,8 @@ static void shot (void)
 
 // Settings over the serial console (lower case lines; the PC-Deck app sends upper case ones, see deck.cpp):
 //   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status,
-//   mode pc|cnc (only with BIGDECK 1), shot (screen image, see tools/shot.py)
+//   mode pc|cnc (only with BIGDECK 1), shot (screen image, see tools/shot.py),
+//   resync (restarts the video output when the picture is shifted sideways)
 static void console (char *line)
 {
     {
@@ -109,8 +110,14 @@ static void console (char *line)
             shot();
             return;
         }
+        else if(!strcmp(line, "resync")) {
+            uint32_t t = millis();
+            bool ok = display_resync();
+            Serial.printf("resync %s, %lu ms\n", ok ? "done" : "failed", (unsigned long)(millis() - t));
+            return;
+        }
         else if(strcmp(line, "status")) {
-            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, scan, shot, status");
+            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, scan, shot, resync, status");
             return;
         }
 
@@ -122,6 +129,7 @@ static void console (char *line)
                       wifi_cfg.enabled ? "on" : "off", wifi_cfg.ssid, *wifi_cfg.pass ? "set" : "empty",
                       *wifi_cfg.ota ? "set" : "empty", wifi_host(), wifi_web_mode(), (int)wifi_state(), wifi_ip());
         usb_link_report();
+        display_report();
     }
 }
 
@@ -167,6 +175,7 @@ void loop (void)
 
     link_poll();
     deck_poll();                    // also reads the console
+    display_poll();                 // video output: resync after an underrun
     battery_poll();
 
     // firmware updates only while the machine is idle, in alarm or not connected
