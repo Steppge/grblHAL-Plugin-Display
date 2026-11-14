@@ -28,6 +28,7 @@ The plugin only uses grblHAL core APIs and is not tied to a driver or MCU.
 | [`esp32p4/`](esp32p4/) | ESP32-P4 firmware for the CrowPanel 9" (PlatformIO, Arduino, LVGL 9) |
 | [`esp32p4/case/`](esp32p4/case/) | Housing for the CrowPanel 9" (STEP and STL) |
 | [`esp32common/`](esp32common/) | Code shared by both firmwares: link, WiFi, web interface, map |
+| [`docs/FLASHING.md`](docs/FLASHING.md) | **Which firmware goes where and how:** Octopus, Octopus-Bridge, P4 display, gamepad receiver |
 
 ## Screens
 
@@ -228,6 +229,9 @@ which is read first and ignored by git, so they survive an update.
 Unused parts can stay enabled, but a switched off part also frees its pins and hides its symbols.
 
 ### Build and flash
+
+All four firmwares of the P4 setup (Octopus, bridge, display, gamepad receiver) step by step:
+**[docs/FLASHING.md](docs/FLASHING.md)**. The display alone:
 
 1. Open `esp32p4/` in PlatformIO, environment `display`.
 2. First time: connect the USB-C socket "UART" (CH340) and Upload.
