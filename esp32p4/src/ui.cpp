@@ -97,7 +97,7 @@ static ui_btn_t *b_menu, *b_mode;
 static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link, *lbl_clock, *lbl_bt, *lbl_batt;
 
 // main
-static lv_obj_t *map_card, *map_canvas, *map_name, *dro_card, *dro_val[3], *dro_mach[3];
+static lv_obj_t *map_card, *map_canvas, *map_name, *map_hint, *dro_card, *dro_val[3], *dro_mach[3];
 static lv_obj_t *prog_track, *prog_fill, *lbl_pct, *lbl_sub, *tool_h, *tool_v, *tool_c;
 static ui_btn_t *row[ROW_N], *b_zoom, *b_view;
 static lv_obj_t *jog_box, *ovr_box, *ovr_val[2];
@@ -898,6 +898,15 @@ static void build_main (lv_obj_t *s)
     zbar_make(&zbar_main, map_card, MAP_W - 28, 12, MAP_H - 24);
     map_name = label(map_card, &lv_font_montserrat_18, 0xD2D7F0, "");
     lv_obj_set_pos(map_name, 18, 14);
+    // machine view before homing: the machine area is not known yet, the job may lie outside the view
+    map_hint = label(map_card, &lv_font_montserrat_20, COL_PWR, "Home first to see\nthe job in the machine area");
+    lv_obj_set_style_text_align(map_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_bg_color(map_hint, C(0x0A0C1E), 0);
+    lv_obj_set_style_bg_opa(map_hint, 210, 0);
+    lv_obj_set_style_radius(map_hint, 10, 0);
+    lv_obj_set_style_pad_all(map_hint, 12, 0);
+    lv_obj_align(map_hint, LV_ALIGN_CENTER, 0, 0);
+    show(map_hint, false);
     b_zoom = btn(map_card, MAP_W - 34 - 64, MAP_H - 70, 56, 56, 28, NULL, NULL, 0, 0, A_Zoom);
     lv_obj_set_style_bg_color(b_zoom->obj, C(0x141632), 0);
     lv_obj_set_style_bg_opa(b_zoom->obj, 220, 0);
@@ -2399,6 +2408,7 @@ static void update_main (void)
         last_map = 0;
     }
     bool pv = view_preview && preview.valid;
+    show(map_hint, !job_mode && !pv && preview.valid && !mc.env_valid);
     btn_enable(b_view, preview.valid);
     set_text(b_view->icon, pv ? LV_SYMBOL_GPS : LV_SYMBOL_IMAGE);
     if(!job_mode)
