@@ -28,6 +28,8 @@
 #include "deck.h"
 #include "battery.h"
 
+LV_FONT_DECLARE(font_clock_120)
+
 #define DECK_FW         "40"
 #define DECK_W          1024
 #define DECK_H          600
@@ -1772,10 +1774,9 @@ void deck_ui (lv_obj_t *root, int y)
     lv_obj_set_style_bg_color(wake_obj, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(wake_obj, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(wake_obj, wake_event, LV_EVENT_ALL, NULL);
-    clock_lbl = text(wake_obj, &lv_font_montserrat_48, COL_TEXT, "");
-    lv_obj_set_style_transform_scale(clock_lbl, 640, 0);       // 2.5x the 48 px font
-    lv_obj_set_style_transform_pivot_x(clock_lbl, LV_PCT(50), 0);
-    lv_obj_set_style_transform_pivot_y(clock_lbl, LV_PCT(50), 0);
+    // 120 px font of its own (digits and ':' only, tools/clockfont.py): a zoomed 48 px font was computed in
+    // software on every redraw and loaded the PSRAM, which caused video underruns
+    clock_lbl = text(wake_obj, &font_clock_120, COL_TEXT, "");
     lv_obj_align(clock_lbl, LV_ALIGN_CENTER, 0, -50);
     date_lbl = text(wake_obj, &lv_font_montserrat_32, COL_DIM, "");
     lv_obj_align(date_lbl, LV_ALIGN_CENTER, 0, 110);
