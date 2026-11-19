@@ -584,19 +584,23 @@ static void show_page (void)
 
 static void draw_wait (void)
 {
+    // Called 4 times a second. LVGL redraws an object on every flag change and label text, even an unchanged
+    // one, and the waiting box covers the screen: that was 2.2 million px/s while waiting, enough load for
+    // video underruns. So flags only when the state changes, the text only when it changes.
+    static bool wait_shown = false;
+    static char shown[160] = "";
     bool ok = pc_ok() && g_pages > 0;
-    if(ok == drawn_ok && ok)
-        return;
-    drawn_ok = ok;
-
-    lv_obj_update_flag(wait_box, LV_OBJ_FLAG_HIDDEN, ok);
-    lv_obj_update_flag(grid, LV_OBJ_FLAG_HIDDEN, !ok);
-    lv_obj_update_flag(vol_box, LV_OBJ_FLAG_HIDDEN, !ok);
-    if(ok) {
-        lv_obj_update_flag(nav, LV_OBJ_FLAG_HIDDEN, g_pages <= 1);
-        return;
+    if(ok != drawn_ok || ok == wait_shown) {    // drawn_ok = false elsewhere forces this
+        drawn_ok = ok;
+        wait_shown = !ok;
+        lv_obj_update_flag(wait_box, LV_OBJ_FLAG_HIDDEN, ok);
+        lv_obj_update_flag(grid, LV_OBJ_FLAG_HIDDEN, !ok);
+        lv_obj_update_flag(vol_box, LV_OBJ_FLAG_HIDDEN, !ok);
+        lv_obj_update_flag(nav, LV_OBJ_FLAG_HIDDEN, !ok || g_pages <= 1);
+        *shown = '\0';
     }
-    lv_obj_add_flag(nav, LV_OBJ_FLAG_HIDDEN);
+    if(ok)
+        return;
 
     char buf[160];
     wifi_state_t st = wifi_home_state();
@@ -610,7 +614,10 @@ static void draw_wait (void)
         snprintf(buf, sizeof(buf), "Big-Deck\nconnecting to '%s' ...", wifi_cfg.ssid);
     else
         strcpy(buf, "Big-Deck\nno home network set: enter it on the WiFi screen");
-    lv_label_set_text(wait_lbl, buf);
+    if(strcmp(buf, shown)) {
+        strlcpy(shown, buf, sizeof(shown));
+        lv_label_set_text(wait_lbl, buf);
+    }
 }
 
 static void osd_show (int pct, const char *text)

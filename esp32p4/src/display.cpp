@@ -16,6 +16,8 @@
 #include <esp_rom_sys.h>
 #include <esp_rom_uart.h>
 #include "display.h"
+#include <esp_system.h>
+#include <esp_attr.h>
 #include "pins.h"
 
 #define LANE_MBPS       1000
@@ -34,7 +36,13 @@ static uint8_t backlight = 0;           // percent, restored after a resync
 static esp_lcd_dpi_panel_config_t dpi = {};
 static lv_display_t *disp_lv = NULL;
 static volatile bool underrun = false;
-static uint32_t underruns = 0, resyncs = 0;
+// Counters since power-on: in RAM that a software reset, a crash or a watchdog leaves alone, so after an
+// unexpected restart "status" still shows what happened before it (a magic marks valid values).
+#define KEEP_MAGIC 0x50344B31u
+static __NOINIT_ATTR struct {
+    uint32_t magic, boots, underruns, resyncs;
+} kept;
+static const char *reset_why = "";
 
 // esp_rom_printf, which the IDF uses in interrupts, goes through here: watch for the underrun message
 // "E lcd.dsi: can't fetch data from external memory fast enough, underrun happens" (esp_lcd, mipi_dsi DPI
@@ -181,7 +189,7 @@ bool display_resync (void)
         lv_obj_invalidate(lv_layer_top());
     }
     heap_caps_free(keep);
-    resyncs++;
+    kept.resyncs++;
     return e == ESP_OK;
 }
 
@@ -193,12 +201,48 @@ void display_poll (void)
     if(!underrun)
         return;
     underrun = false;
-    underruns++;
+    kept.underruns++;
     if(millis() - last < RESYNC_GAP_MS)
         return;
     last = millis();
     display_resync();
     underrun = false;
+}
+
+static const char *reset_text (esp_reset_reason_t r)
+{
+    switch(r) {
+        case ESP_RST_POWERON:   return "power-on";
+        case ESP_RST_EXT:       return "reset pin";
+        case ESP_RST_SW:        return "software restart";
+        case ESP_RST_PANIC:     return "crash (panic)";
+        case ESP_RST_INT_WDT:   return "interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "task watchdog";
+        case ESP_RST_WDT:       return "watchdog";
+        case ESP_RST_DEEPSLEEP: return "deep sleep";
+        case ESP_RST_BROWNOUT:  return "brownout (supply too low)";
+        case ESP_RST_SDIO:      return "SDIO";
+        case ESP_RST_USB:       return "USB";
+        case ESP_RST_JTAG:      return "JTAG";
+        case ESP_RST_EFUSE:     return "eFuse";
+        case ESP_RST_PWR_GLITCH:return "power glitch";
+        case ESP_RST_CPU_LOCKUP:return "CPU lockup";
+        default:                return "unknown";
+    }
+}
+
+// once at the start: keeps the counters over a restart, clears them after power-on
+void display_boot_info (void)
+{
+    esp_reset_reason_t r = esp_reset_reason();
+    if(kept.magic != KEEP_MAGIC || r == ESP_RST_POWERON || r == ESP_RST_BROWNOUT) {
+        memset(&kept, 0, sizeof(kept));
+        kept.magic = KEEP_MAGIC;
+    }
+    kept.boots++;
+    reset_why = reset_text(r);
+    Serial.printf("start: %s, start %u since power-on, %u underruns and %u resyncs before\n", reset_why,
+                  (unsigned)kept.boots, (unsigned)kept.underruns, (unsigned)kept.resyncs);
 }
 
 void display_report (void)
@@ -209,9 +253,12 @@ void display_report (void)
     last_ms = now;
     last_px = px;
 
-    Serial.printf("display: %u underruns, %u resyncs, redrawn %lu px/s since the last status (screen %u px), "
+    uint32_t up = millis() / 1000;
+    Serial.printf("up %lu:%02lu:%02lu, last start: %s, start %u since power-on\n", (unsigned long)(up / 3600),
+                  (unsigned long)(up / 60 % 60), (unsigned long)(up % 60), reset_why, (unsigned)kept.boots);
+    Serial.printf("display (since power-on): %u underruns, %u resyncs, redrawn %lu px/s since the last status (screen %u px), "
                   "pixel clock %u MHz, strips of %u lines in %s\n",
-                  (unsigned)underruns, (unsigned)resyncs, (unsigned long)rate, LCD_W * LCD_H, DPI_MHZ,
+                  (unsigned)kept.underruns, (unsigned)kept.resyncs, (unsigned long)rate, LCD_W * LCD_H, DPI_MHZ,
                   (unsigned)strip_lines, strip_psram ? "PSRAM" : "internal RAM");
 }
 

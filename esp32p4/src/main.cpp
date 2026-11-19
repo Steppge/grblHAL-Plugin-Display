@@ -143,6 +143,7 @@ void setup (void)
     delay(200);
     Serial.printf("\ngrblHAL display P4 %s, built %s %s, chip rev %d, %u MHz, PSRAM %u bytes\n", DISPLAY_VERSION, __DATE__, __TIME__,
                   ESP.getChipRevision(), ESP.getCpuFreqMHz(), ESP.getPsramSize());
+    display_boot_info();
 
     lv_init();
     lv_tick_set_cb(tick);
