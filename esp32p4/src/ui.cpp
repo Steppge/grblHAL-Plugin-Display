@@ -2952,8 +2952,9 @@ void ui_update (void)
     if(!lv_obj_has_flag(fw_box, LV_OBJ_FLAG_HIDDEN))
         update_fw();
 
-    // no connection to the controller for 1 s (online drops after 0.5 s): red message in the middle, blinking
-    // at 1 Hz. grblHAL sends no status during the homing moves, so then only "Homing" for up to a minute.
+    // no connection to the controller for 1 s (online drops after 0.5 s): red message in the middle, steady (blinking
+    // redrew the box and the map below it twice a second, often for hours with the machine off: video underruns).
+    // grblHAL sends no status during the homing moves, so then only "Homing" for up to a minute.
     static uint32_t online_seen = 0;
     static int lost_mode = -1;
     if(mc.online)
@@ -2965,7 +2966,7 @@ void ui_update (void)
         lv_obj_set_style_bg_color(lost_box, C(mode == 1 ? COL_BG2 : COL_RED2), 0);
         set_text(lost_lbl, mode == 1 ? LV_SYMBOL_HOME "  Homing ..." : LV_SYMBOL_WARNING "  No connection to the machine");
     }
-    show(lost_box, !deck_mode() && (mode == 1 || (mode == 2 && millis() % 1000 < 500)));
+    show(lost_box, !deck_mode() && mode != 0);
 
     // job: from leaving idle into a cycle until idle again (holds included)
     bool job = !!(mc.state & (STATE_CYCLE | STATE_HOLD | STATE_TOOL_CHANGE));

@@ -49,8 +49,13 @@ static const char *reset_why = "";
 // interrupt). The IDF has no callback for it. Two parts of the text are watched, so a small change of the
 // wording in a newer framework still triggers; after a framework update check it with the console
 // command "resync" and "status" (underruns, resyncs).
+// Arduino installs its own output again when the debug UART is ended (uartEnd() -> uartSetDebug()), which
+// would end this watch: "status" checks with a test character that it still sees the output.
+static volatile uint32_t hook_chars = 0;
+
 static void IRAM_ATTR rom_putc (char c)
 {
+    hook_chars++;
     static const char key1[] = "underrun", key2[] = "fast enough";
     static uint8_t pos1 = 0, pos2 = 0;
 
@@ -256,6 +261,9 @@ void display_report (void)
     uint32_t up = millis() / 1000;
     Serial.printf("up %lu:%02lu:%02lu, last start: %s, start %u since power-on\n", (unsigned long)(up / 3600),
                   (unsigned long)(up / 60 % 60), (unsigned long)(up % 60), reset_why, (unsigned)kept.boots);
+    uint32_t seen = hook_chars;
+    esp_rom_printf("\r");          // a test character through the watched output
+    Serial.printf("underrun watch %s\n", hook_chars != seen ? "ok" : "LOST");
     Serial.printf("display (since power-on): %u underruns, %u resyncs, redrawn %lu px/s since the last status (screen %u px), "
                   "pixel clock %u MHz, strips of %u lines in %s\n",
                   (unsigned)kept.underruns, (unsigned)kept.resyncs, (unsigned long)rate, LCD_W * LCD_H, DPI_MHZ,
