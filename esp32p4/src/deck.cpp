@@ -27,6 +27,8 @@
 #include "link.h"
 #include "deck.h"
 #include "battery.h"
+#include "beep.h"
+#include "ui.h"
 
 LV_FONT_DECLARE(font_clock_120)
 
@@ -1016,7 +1018,11 @@ static void encoder_poll (void)
             if(report && !sw_turned)
                 io->println(now - sw_since >= KNOB_LONG_MS ? "KNOBLONG" : "KNOB");
             else if(!mode_on && !sw_turned && now - sw_since < KNOB_LONG_MS)
-                link_rt(CMD_OVR_FEED_RESET);        // CNC: short press, feed override back to 100 %
+                ui_touch_lock_toggle();             // CNC: short press, touch lock on/off
+        } else if(sw_down && !mode_on && !sw_turned && now - sw_since >= KNOB_LONG_MS) {
+            sw_turned = true;                       // done: the release reports nothing
+            link_rt(CMD_OVR_FEED_RESET);            // CNC: held 1.5 s, feed override back to 100 %
+            beep(1, 60, 0);
         }
     }
 
@@ -1840,4 +1846,9 @@ bool deck_mode (void)
 bool deck_app_connected (void)
 {
     return pc_ok();
+}
+
+bool deck_dimmed (void)
+{
+    return dimmed;
 }

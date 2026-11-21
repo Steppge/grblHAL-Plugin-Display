@@ -12,7 +12,8 @@
 #define REG_POINT1      0x8150      // x low, x high, y low, y high, ...
 #define TOUCH_LOST_MS   100         // no answer for this long: released
 
-static bool pressed = false;
+static bool pressed = false, was_pressed = false, blocked = false;
+static bool (*filter)(lv_point_t p) = NULL;
 static int16_t last_x = 0, last_y = 0;
 
 static bool reg_read (uint16_t reg, uint8_t *buf, uint8_t len)
@@ -88,9 +89,22 @@ static void touch_read (lv_indev_t *indev, lv_indev_data_t *data)
     else if(pressed && millis() - answered > TOUCH_LOST_MS)
         pressed = false;
 
+    // a new touch is asked once; a refused one stays released for LVGL until the finger is lifted
+    lv_point_t p = { last_x, last_y };
+    if(pressed && !was_pressed)
+        blocked = filter && !filter(p);
+    else if(!pressed)
+        blocked = false;
+    was_pressed = pressed;
+
     data->point.x = last_x;
     data->point.y = last_y;
-    data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    data->state = pressed && !blocked ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+
+void touch_set_filter (bool (*allow)(lv_point_t p))
+{
+    filter = allow;
 }
 
 void touch_indev (lv_display_t *disp)

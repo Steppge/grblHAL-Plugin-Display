@@ -221,7 +221,7 @@ which is read first and ignored by git, so they survive an update.
 | Setting | Default | |
 |---|---|---|
 | `CLOCK` | 1 | time in the status bar and on the dimmed screen, job end as a time of day (NTP over the home network) |
-| `ENCODER` | 1 | EC11 encoder on J7 (GPIO50 A, GPIO51 B, GPIO5 push button): feed override, push = 100 % |
+| `ENCODER` | 1 | EC11 encoder on J7 (GPIO50 A, GPIO51 B, GPIO5 push button): feed override, hold 1.5 s = 100 %, short push = touch lock (Hold/Stop still work) |
 | `BATTERY` | 1 | battery voltage on J7 GPIO53 (1 MOhm / 1 MOhm divider): symbol, percent, run time |
 | `GAMEPAD` | 1 | gamepad receiver on J7 (GPIO2 TX, GPIO3 RX), passed through to the controller |
 | `BIGDECK` | 0 | PC-Deck mode, only useful with the PC-Deck app |

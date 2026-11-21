@@ -22,6 +22,7 @@
 #include "usb_link.h"
 #include "deck.h"
 #include "battery.h"
+#include "touch.h"
 
 #define LONG_PRESS_MS       600     // buttons that move the machine or change offsets
 #define FORCE_UNLOCK_MS    3000     // unlock without homing ($22 override locks)
@@ -97,7 +98,8 @@ static lv_obj_t *scr_obj[S_Count];
 
 // top bar
 static ui_btn_t *b_menu, *b_mode;
-static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link, *lbl_clock, *lbl_bt, *lbl_batt;
+static lv_obj_t *pill, *pill_lbl, *lbl_feed, *lbl_pwr, *lbl_wcs, *lbl_link, *lbl_clock, *lbl_bt, *lbl_batt, *lbl_lock;
+static bool touch_locked = false;       // short knob press in the CNC mode, not stored
 
 // main
 static lv_obj_t *map_card, *map_canvas, *map_name, *map_hint, *dro_card, *dro_val[3], *dro_mach[3];
@@ -685,6 +687,7 @@ static void screen_show (screen_t s)
     show(lbl_wifi, top);
     show(lbl_clock, top);
     show(lbl_bt, top);
+    show(lbl_lock, top);
     show(lbl_batt, top);
     show(b_mode->obj, top && BIGDECK);
     if(s == S_Main)
@@ -898,6 +901,8 @@ static void build_topbar (lv_obj_t *s)
     lv_obj_set_pos(lbl_batt, BATT_X, BATT_Y);
     lbl_bt = label(s, &lv_font_montserrat_24, COL_Z, "");               // gamepad controller
     lv_obj_set_pos(lbl_bt, 884, 15);
+    lbl_lock = label(s, &lv_font_montserrat_24, COL_ORANGE1, "");       // touch lock
+    lv_obj_set_pos(lbl_lock, 848, 15);
     lbl_wifi = label(s, &lv_font_montserrat_24, 0x50506E, LV_SYMBOL_WIFI);
     lv_obj_set_pos(lbl_wifi, 912, 9);
     lv_obj_set_style_pad_all(lbl_wifi, 6, 0);
@@ -2536,6 +2541,7 @@ static void update_topbar (void)
     // Bluetooth symbol while a gamepad controller is connected, red with its buttons enabled (Options)
     bool pad = mc.online && (mc.gp_flags & GP_CONNECTED);
     set_text(lbl_bt, pad ? LV_SYMBOL_BLUETOOTH : "");
+    set_text(lbl_lock, touch_locked && !deck_mode() ? LV_SYMBOL_EYE_CLOSE : "");
     text_color(lbl_bt, C(mc.gp_flags & GP_ENABLED ? COL_RED1 : COL_Z));
 
     link_path_t lp = usb_link_path();
@@ -3040,6 +3046,41 @@ void ui_update (void)
     update_screen();
 }
 
+// touch lock: only the buttons that stop the machine still take a touch (Hold, Stop / Reset, zoom STOP)
+static bool lock_exempt (int action)
+{
+    return action == A_Hold || action == A_Reset || action == A_ZoomStop;
+}
+
+static bool touch_allow (lv_point_t p)
+{
+    if(!touch_locked || deck_mode() || deck_dimmed())   // dimmed: the touch only wakes
+        return true;
+
+    lv_obj_t *o = lv_indev_search_obj(lv_layer_top(), &p);
+    if(o == NULL)
+        o = lv_indev_search_obj(lv_screen_active(), &p);
+    for(; o; o = lv_obj_get_parent(o))
+        for(int i = 0; i < n_btns; i++)
+            if(btns[i].obj == o && (lock_exempt(btns[i].tap) || lock_exempt(btns[i].hold)))
+                return true;
+
+    banner_show(LV_SYMBOL_EYE_CLOSE "  Touch locked - press the knob to unlock", COL_ORANGE2, 2000);
+    return false;
+}
+
+void ui_touch_lock_toggle (void)
+{
+    touch_locked = !touch_locked;
+    if(touch_locked) {
+        beep(2, 40, 60);
+        banner_show(LV_SYMBOL_EYE_CLOSE "  Touch locked - Hold and Stop still work", COL_ORANGE2, 2000);
+    } else {
+        beep(1, 150, 0);
+        banner_show("Touch unlocked", COL_GREEN2, 1500);
+    }
+}
+
 void ui_set_deck_mode (bool on)
 {
     if(BIGDECK && on != deck_mode())
@@ -3081,6 +3122,7 @@ void ui_init (void)
     build_topbar(root);
     build_fw(root);
     build_banner(root);
+    touch_set_filter(touch_allow);
 
     // on top of everything, touches go through
     lost_box = box(root, (SCR_W - 640) / 2, (SCR_H - 120) / 2, 640, 120);

@@ -19,3 +19,4 @@ bool deck_mode (void);
 uint8_t deck_cnc_dim (void);            // CNC/laser screen: dim (with the clock) after n minutes without a job
 void deck_set_cnc_dim (uint8_t minutes); // 0 = never, stored
 bool deck_app_connected (void);         // the PC-Deck app talks to the deck
+bool deck_dimmed (void);                // dimmed: the next touch only wakes
