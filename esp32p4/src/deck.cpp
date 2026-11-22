@@ -32,7 +32,7 @@
 
 LV_FONT_DECLARE(font_clock_120)
 
-#define DECK_FW         "40"
+#define DECK_FW         "42"      // 41: TAPXY (PRESS with the tap position), 42: corner buttons (icon bit 1)
 #define DECK_W          1024
 #define DECK_H          600
 #define NET_PORT        5555
@@ -99,6 +99,7 @@ struct theme_t {
 struct tile_t {
     uint8_t page, idx;
     bool icon;
+    bool corners;       // sound tile: buttons in the upper corners (TILE/TSET icon field bit 1, FW 42)
     String label;
 };
 
@@ -146,11 +147,15 @@ static uint8_t *blk;                    // 4 KB blocks (images, refused)
 // user interface
 static lv_obj_t *page_obj, *grid, *nav, *nav_title, *wait_box, *wait_lbl, *ask_box, *osd_box, *osd_lbl, *osd_bar;
 static lv_obj_t *tile_obj[MAX_TILES], *tile_img[MAX_TILES], *tile_lbl[MAX_TILES];
+static lv_obj_t *tile_cl[MAX_TILES], *tile_cr[MAX_TILES];     // corner buttons of sound tiles
+static lv_image_dsc_t corner_dsc[2];                            // left "from the start", right "0.5 s back"
+static int corner_d = 0;
 static lv_image_dsc_t tile_dsc[MAX_TILES];
 static int area_y, area_h;
 static int down_tile = -1, ask_tile = -1;
 static uint32_t down_since = 0;
 static bool long_sent = false, delete_armed = false;
+static bool tap_xy = false;     // TAPXY 1 from the app: PRESS with the tap position, until the next HELLO
 static bool dragging = false;           // long held stored tile is dragged to another place (MOVE, FW 40)
 static int drag_target = -1;            // place under the finger, framed also when empty
 static lv_point_t down_pt;
@@ -349,7 +354,7 @@ static void save_layout (void)
         return;
     f.printf("%d %d %d %s\n", g_cols, g_rows, g_pages, g_hash.c_str());
     for(auto &t : tiles)
-        f.printf("%u %u %d %s\n", t.page, t.idx, t.icon ? 1 : 0, t.label.c_str());
+        f.printf("%u %u %d %s\n", t.page, t.idx, (t.icon ? 1 : 0) | (t.corners ? 2 : 0), t.label.c_str());
     f.close();
 }
 
@@ -366,7 +371,7 @@ static void load_layout (void)
             l = f.readStringUntil('\n');
             int p, i, ic, off = 0;
             if(sscanf(l.c_str(), "%d %d %d %n", &p, &i, &ic, &off) >= 3) {
-                tile_t t { (uint8_t)p, (uint8_t)i, ic != 0, off > 0 ? l.substring(off) : String("") };
+                tile_t t { (uint8_t)p, (uint8_t)i, (ic & 1) != 0, (ic & 2) != 0, off > 0 ? l.substring(off) : String("") };
                 t.label.trim();
                 tiles.push_back(t);
             }
@@ -478,6 +483,78 @@ static void load_theme (void)
         load_page_image();
 }
 
+// Corner buttons as ARGB8888 images, drawn with 4x4 supersampling: left a grey disc with |<, right a blue
+// disc with a circular arrow (gap at the lower left, head at 200 degrees) and << in the middle.
+static bool in_tri (float x, float y, float ax, float ay, float bx, float by, float cx, float cy)
+{
+    float d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by);
+    float d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy);
+    float d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay);
+    return !(((d1 < 0) || (d2 < 0) || (d3 < 0)) && ((d1 > 0) || (d2 > 0) || (d3 > 0)));
+}
+
+static bool corner_white (int which, float u, float v)     // u right, v up, unit disc
+{
+    if(which == 0)
+        return (u >= -0.44f && u <= -0.28f && v >= -0.38f && v <= 0.38f) ||
+               in_tri(u, v, -0.26f, 0.0f, 0.40f, 0.40f, 0.40f, -0.40f);
+
+    float r = sqrtf(u * u + v * v), a = atan2f(v, u) * 180.0f / (float)M_PI;
+    if(a < 0.0f)
+        a += 360.0f;
+    if(r >= 0.52f && r <= 0.66f && !(a > 200.0f && a < 250.0f))
+        return true;
+    // arrow head at the end of the arc (200 degrees), pointing along it (counterclockwise)
+    float ar = 200.0f * (float)M_PI / 180.0f, px = 0.59f * cosf(ar), py = 0.59f * sinf(ar);
+    float tx = -sinf(ar), ty = cosf(ar), nx = cosf(ar), ny = sinf(ar);
+    if(in_tri(u, v, px - tx * 0.26f, py - ty * 0.26f, px + nx * 0.22f, py + ny * 0.22f, px - nx * 0.22f, py - ny * 0.22f))
+        return true;
+    return in_tri(u, v, -0.34f, 0.0f, -0.04f, 0.22f, -0.04f, -0.22f) ||
+           in_tri(u, v, -0.04f, 0.0f, 0.26f, 0.22f, 0.26f, -0.22f);
+}
+
+static void corner_images (int d)
+{
+    if(d == corner_d || d < 8)
+        return;
+    corner_d = d;
+    static const uint32_t disc[2] = { 0x606878, 0x308CFF };
+    for(int k = 0; k < 2; k++) {
+        if(corner_dsc[k].data)
+            free((void *)corner_dsc[k].data);
+        uint8_t *buf = (uint8_t *)ps_calloc(1, d * d * 4);
+        corner_dsc[k].header.magic = LV_IMAGE_HEADER_MAGIC;
+        corner_dsc[k].header.cf = LV_COLOR_FORMAT_ARGB8888;
+        corner_dsc[k].header.w = d;
+        corner_dsc[k].header.h = d;
+        corner_dsc[k].header.stride = d * 4;
+        corner_dsc[k].data_size = d * d * 4;
+        corner_dsc[k].data = buf;
+        if(!buf)
+            continue;
+        for(int y = 0; y < d; y++)
+            for(int x = 0; x < d; x++) {
+                int in = 0, wh = 0;
+                for(int sy = 0; sy < 4; sy++)
+                    for(int sx = 0; sx < 4; sx++) {
+                        float u = ((x + (sx + 0.5f) / 4.0f) / d) * 2.0f - 1.0f, v = 1.0f - ((y + (sy + 0.5f) / 4.0f) / d) * 2.0f;
+                        if(u * u + v * v <= 1.0f) {
+                            in++;
+                            if(corner_white(k, u, v))
+                                wh++;
+                        }
+                    }
+                float w = in ? (float)wh / in : 0.0f;
+                uint8_t *px = buf + (y * d + x) * 4;      // B G R A
+                px[0] = (uint8_t)((disc[k] & 0xFF) * (1.0f - w) + 255 * w);
+                px[1] = (uint8_t)(((disc[k] >> 8) & 0xFF) * (1.0f - w) + 255 * w);
+                px[2] = (uint8_t)(((disc[k] >> 16) & 0xFF) * (1.0f - w) + 255 * w);
+                px[3] = (uint8_t)(in * 255 / 16);
+            }
+        lv_image_cache_drop(&corner_dsc[k]);
+    }
+}
+
 static void draw_tile (int i)
 {
     if(i < 0 || i >= MAX_TILES || !tile_obj[i])
@@ -514,6 +591,18 @@ static void draw_tile (int i)
     } else
         lv_obj_add_flag(tile_img[i], LV_OBJ_FLAG_HIDDEN);
 
+    // corner buttons of sound tiles, also while the tile runs as a live tile
+    bool corners = t && t->corners && corner_dsc[0].data && corner_dsc[1].data;
+    if(corners) {
+        lv_image_set_src(tile_cl[i], &corner_dsc[0]);
+        lv_image_set_src(tile_cr[i], &corner_dsc[1]);
+        lv_obj_remove_flag(tile_cl[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(tile_cr[i], LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(tile_cl[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(tile_cr[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
     lv_label_set_text(tile_lbl[i], text);
     lv_obj_align(tile_lbl[i], icon ? LV_ALIGN_BOTTOM_MID : LV_ALIGN_CENTER, 0, icon ? -6 : 0);
     lv_obj_set_style_text_font(tile_lbl[i], icon ? &lv_font_montserrat_18 : &lv_font_montserrat_24, 0);
@@ -531,6 +620,7 @@ static void place_tiles (void)
     int scale = isz >= ICON_SZ * 2 ? 512 : isz >= ICON_SZ * 3 / 2 ? 384 : 256;     // whole steps stay sharp
 
     lv_obj_set_size(grid, GRID_W, gh);
+    corner_images(min(tw * 28 / 100, 64));
     for(int i = 0; i < MAX_TILES; i++) {
         int c = i % cols, r = i / cols;
         if(i >= cols * rows) {
@@ -543,6 +633,8 @@ static void place_tiles (void)
         lv_obj_align(tile_img[i], LV_ALIGN_CENTER, 0, -label_h / 2);
         lv_obj_set_width(tile_lbl[i], tw - 12);
         lv_obj_set_size(tile_shine[i], tw, th / 2);
+        lv_obj_align(tile_cl[i], LV_ALIGN_TOP_LEFT, 6, 6);
+        lv_obj_align(tile_cr[i], LV_ALIGN_TOP_RIGHT, -6, 6);
     }
 }
 
@@ -857,8 +949,18 @@ static void tile_event (lv_event_t *e)
             drag_show(-1);
             if(t >= 0)
                 io->printf("MOVE %d %d %d\n", cur_page, i, t);
+        } else if(long_sent)
+            io->printf("LONG %d %d\n", cur_page, i);
+        else if(tap_xy) {
+            // where the finger came down, in percent of the tile (0..99, x left to right, y top down)
+            lv_area_t a;
+            lv_obj_get_coords((lv_obj_t *)lv_event_get_current_target(e), &a);
+            int w = max((int)lv_area_get_width(&a), 1), h = max((int)lv_area_get_height(&a), 1);
+            int x = constrain((int)((down_pt.x - a.x1) * 100 / w), 0, 99);
+            int y = constrain((int)((down_pt.y - a.y1) * 100 / h), 0, 99);
+            io->printf("PRESS %d %d %d %d\n", cur_page, i, x, y);
         } else
-            io->printf(long_sent ? "LONG %d %d\n" : "PRESS %d %d\n", cur_page, i);
+            io->printf("PRESS %d %d\n", cur_page, i);
         down_tile = -1;
         long_sent = dragging = false;
         tile_frame(i, false, false);
@@ -1111,10 +1213,14 @@ static void handle_line (char *line)
     pc_seen = true;
 
     if(!strncmp(line, "HELLO", 5)) {
+        tap_xy = false;     // until the app asks again with TAPXY 1
         // fields as Deck 1/2: fw, size, id, layout hash, page drawn at once, design hash, IP
         io->printf("DECK %s %d %d %s %s 1 %s %s\n", DECK_FW, DECK_W, DECK_H, deck_id.c_str(), g_hash.c_str(),
                    theme.on ? theme.hash.c_str() : "none",
                    wifi_home_state() == Wifi_Connected ? wifi_ip() : "-");
+    } else if(!strncmp(line, "TAPXY ", 6)) {
+        tap_xy = atoi(line + 6) != 0;
+        io->println("ACK");
     } else if(!strncmp(line, "BEGIN ", 6)) {
         char hash[64] = { 0 };
         if(sscanf(line + 6, "%d %d %d %63s", &p_cols, &p_rows, &p_pages, hash) != 4) {
@@ -1137,7 +1243,7 @@ static void handle_line (char *line)
             io->println("ERR tile");
             return;
         }
-        tile_t t { (uint8_t)p, (uint8_t)i, ic != 0, off > 0 ? String(line + 5 + off) : String("") };
+        tile_t t { (uint8_t)p, (uint8_t)i, (ic & 1) != 0, (ic & 2) != 0, off > 0 ? String(line + 5 + off) : String("") };
         t.label.trim();
         pending.push_back(t);
         io->println("ACK");
@@ -1191,10 +1297,10 @@ static void handle_line (char *line)
                 tiles.erase(tiles.begin() + k);
                 break;
             }
-        if(del || !ic)
+        if(del || !(ic & 1))
             LittleFS.remove(icon_path(p, i));
         if(!del) {
-            tile_t t { (uint8_t)p, (uint8_t)i, ic != 0, off > 0 ? String(line + 5 + off) : String("") };
+            tile_t t { (uint8_t)p, (uint8_t)i, (ic & 1) != 0, (ic & 2) != 0, off > 0 ? String(line + 5 + off) : String("") };
             t.label.trim();
             tiles.push_back(t);
         }
@@ -1692,6 +1798,11 @@ void deck_ui (lv_obj_t *root, int y)
         lv_obj_remove_flag(tile_img[i], LV_OBJ_FLAG_CLICKABLE);
         tile_lbl[i] = text(t, &lv_font_montserrat_18, COL_TEXT, "");
         lv_label_set_long_mode(tile_lbl[i], LV_LABEL_LONG_DOT);
+        for(lv_obj_t **c : { &tile_cl[i], &tile_cr[i] }) {
+            *c = lv_image_create(t);
+            lv_obj_remove_flag(*c, LV_OBJ_FLAG_CLICKABLE);     // the tap goes to the tile (PRESS with x/y)
+            lv_obj_add_flag(*c, LV_OBJ_FLAG_HIDDEN);
+        }
         lv_obj_add_flag(t, LV_OBJ_FLAG_HIDDEN);
     }
 

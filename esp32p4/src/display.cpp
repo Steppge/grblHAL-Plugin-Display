@@ -270,10 +270,18 @@ void display_report (void)
                   (unsigned)strip_lines, strip_psram ? "PSRAM" : "internal RAM");
 }
 
+// brighter by more than 10 %: in BL_FADE_MS by the LEDC hardware instead of one step (waking from the
+// dimmed screen: a jump of the backlight current at the moment the whole screen is drawn again)
+#define BL_FADE_MS  1000
+
 void display_backlight (uint8_t pct)
 {
+    uint32_t from = (uint32_t)backlight * 255 / 100;
     backlight = min<uint8_t>(pct, 100);
-    ledcWrite(PIN_LCD_BL, (uint32_t)backlight * 255 / 100);
+    uint32_t to = (uint32_t)backlight * 255 / 100;
+    if(to > from + 25 && ledcFade(PIN_LCD_BL, from, to, BL_FADE_MS))
+        return;
+    ledcWrite(PIN_LCD_BL, to);
 }
 
 #define CHECK(x, what) do { esp_err_t e_ = (x); if(e_ != ESP_OK) { Serial.printf("display: %s failed (%s)\n", what, esp_err_to_name(e_)); return NULL; } } while(0)

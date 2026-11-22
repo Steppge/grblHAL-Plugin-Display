@@ -19,6 +19,7 @@ struct map_view_t {
     float x0, y0;       // machine position (mm) of the left/bottom edge
     float scale;        // pixels per mm
     int w, h;           // pixels
+    bool d3;            // oblique 3D view of the preview depth map (PREVIEW_3D), no machine positions
 };
 
 void map_init (void);
@@ -29,6 +30,9 @@ void map_extent (float *x0, float *y0, float *x1, float *y1);
 void map_view_full (map_view_t *v, int w, int h);
 void map_view_zoom (map_view_t *v, int w, int h);
 void map_view_preview (map_view_t *v, int w, int h);   // fits the G-code preview, full view without one
+void map_view_3d (map_view_t *v, int w, int h);        // 3D view of the preview depth map
+// the tool drawn into the 3D view (work position, diameter in mm), applies to the next render
+void map_3d_tool (bool on, float wx, float wy, float wz, float d);
 void map_render (uint16_t *buf, const map_view_t *v, bool fine_grid);
 
 // Render in a task on core 0, so the main loop goes on meanwhile (a render takes up to some 100 ms).

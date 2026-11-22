@@ -2,6 +2,13 @@
 
 #include <Arduino.h>
 
+#if __has_include("display_config.h")
+#include "display_config.h"     // ESP32-P4: PREVIEW_3D
+#endif
+#ifndef PREVIEW_3D
+#define PREVIEW_3D          0
+#endif
+
 // grblHAL system state bits (grbl/system.h)
 #define STATE_IDLE          0
 #define STATE_ALARM         (1 << 0)
@@ -106,6 +113,15 @@ struct preview_t {
     bool loading;
     char name[64];
     float x0, y0, x1, y1;   // bounds of the burned/cut moves, work coordinates (mm)
+    bool has_z;             // Z range of the cutting moves (CNC files), work coordinates (mm)
+    float z0, z1;
+#if PREVIEW_3D
+    // depth map (PH/PZ): 4 bits per pixel, 0 = not cut, 1 = z1 ... 15 = z0; row 0 = top (hy1)
+    bool has_depth;
+    float hx0, hy0, hx1, hy1, tool_d;   // tool_d: largest tool of the tool list, 0 unknown
+    uint16_t hw, hh;
+    uint8_t depth[PREVIEW_W_MAX / 2 * PREVIEW_H_MAX];
+#endif
     uint16_t w, h;          // bitmap size, row 0 = top (y1)
     uint16_t seq;           // counts completed previews
     uint8_t bits[PREVIEW_W_MAX / 8 * PREVIEW_H_MAX];
@@ -150,6 +166,17 @@ struct settings_list_t {
 extern machine_t mc;
 extern file_list_t files;
 extern preview_t preview;
+
+// Stock (raw material) of the preview: the tool path widened by the tool radius from the tool list,
+// without one (or without a depth map) only the path.
+static inline float preview_tool_r (void)
+{
+#if PREVIEW_3D
+    return preview.has_depth && preview.tool_d > 0.0f ? preview.tool_d / 2.0f : 0.0f;
+#else
+    return 0.0f;
+#endif
+}
 extern settings_list_t setlist;
 
 void link_settings (void);              // request all settings

@@ -158,6 +158,7 @@ static void view_fit (map_view_t *v, int w, int h, float x0, float y0, float x1,
 
     v->w = w;
     v->h = h;
+    v->d3 = false;
     v->scale = min(sx, sy);
     v->x0 = (x0 + x1) / 2.0f - w / 2.0f / v->scale;
     v->y0 = (y0 + y1) / 2.0f - h / 2.0f / v->scale;
@@ -184,14 +185,28 @@ void map_view_zoom (map_view_t *v, int w, int h)
 void map_view_preview (map_view_t *v, int w, int h)
 {
     if(preview.valid)
-        view_fit(v, w, h, preview.x0 + wco_x() - PREVIEW_MARGIN, preview.y0 + wco_y() - PREVIEW_MARGIN,
-                  preview.x1 + wco_x() + PREVIEW_MARGIN, preview.y1 + wco_y() + PREVIEW_MARGIN);
+        view_fit(v, w, h, preview.x0 - preview_tool_r() + wco_x() - PREVIEW_MARGIN,
+                  preview.y0 - preview_tool_r() + wco_y() - PREVIEW_MARGIN,
+                  preview.x1 + preview_tool_r() + wco_x() + PREVIEW_MARGIN,
+                  preview.y1 + preview_tool_r() + wco_y() + PREVIEW_MARGIN);
     else
         map_view_full(v, w, h);
 }
 
+void map_view_3d (map_view_t *v, int w, int h)
+{
+    v->w = w;
+    v->h = h;
+    v->x0 = v->y0 = 0.0f;
+    v->scale = 1.0f;
+    v->d3 = true;
+}
+
 bool map_to_px (const map_view_t *v, float mx, float my, int *px, int *py)
 {
+    if(v->d3)
+        return false;       // the 3D view shows no machine positions
+
 #if MAP_X_LEFT
     *px = v->w - 1 - (int)lroundf((mx - v->x0) * v->scale);
 #else
@@ -252,10 +267,12 @@ static uint8_t grid_flags (float m, float e0, float e1, float step, float grid, 
     return g;
 }
 
-// Preview bit at a machine position, -1 outside the preview area; scale and offset once per render
+// Preview bit at a machine position: -1 outside the stock, 3 its frame, 0/1 the bitmap (0 also for the
+// stock around the path); scale, offset and stock once per render
 struct preview_map_t {
     bool valid;
     float wco_x, wco_y, s;
+    float r, edge;      // tool radius (stock = path + r), frame width (mm)
 };
 
 static inline int preview_bit (const preview_map_t *p, float mx, float my)
@@ -264,8 +281,13 @@ static inline int preview_bit (const preview_map_t *p, float mx, float my)
         return -1;
 
     float wx = mx - p->wco_x, wy = my - p->wco_y;
-    if(wx < preview.x0 || wx > preview.x1 || wy < preview.y0 || wy > preview.y1)
+    float sx0 = preview.x0 - p->r, sx1 = preview.x1 + p->r, sy0 = preview.y0 - p->r, sy1 = preview.y1 + p->r;
+    if(wx < sx0 || wx > sx1 || wy < sy0 || wy > sy1)
         return -1;
+    if(wx - sx0 < p->edge || sx1 - wx < p->edge || wy - sy0 < p->edge || sy1 - wy < p->edge)
+        return 3;
+    if(wx < preview.x0 || wx > preview.x1 || wy < preview.y0 || wy > preview.y1)
+        return 0;
 
     int px = (int)((wx - preview.x0) * p->s), py = (int)((preview.y1 - wy) * p->s);
     if(px < 0 || py < 0 || px >= preview.w || py >= preview.h)
@@ -274,8 +296,165 @@ static inline int preview_bit (const preview_map_t *p, float mx, float my)
     return (preview.bits[py * (preview.w / 8) + px / 8] >> (7 - (px & 7))) & 1;
 }
 
+#if PREVIEW_3D
+
+static inline void fill_col (uint16_t *buf, int w, int h, int x0, int x1, int y0, int y1, uint16_t c)
+{
+    if(y0 < 0) y0 = 0;
+    if(y1 > h) y1 = h;
+    if(x0 < 0) x0 = 0;
+    if(x1 > w) x1 = w;
+    for(int y = y0; y < y1; y++) {
+        uint16_t *p = buf + y * w;
+        for(int x = x0; x < x1; x++)
+            p[x] = c;
+    }
+}
+
+#define TOOL3D_LEN      30.0f   // shaft length drawn (mm)
+
+static struct {
+    bool on;
+    float x, y, z, d;
+} tool3d;
+
+void map_3d_tool (bool on, float wx, float wy, float wz, float d)
+{
+    tool3d = { on, wx, wy, wz, d };
+}
+
+// The tool as a cylinder in the same oblique view as the workpiece: round bottom edge (front half of the
+// tip circle), shaded body with flutes at the lower end, the top face as a full ellipse.
+// x, y: center of the tip; tw: width in pixels, eh: height of the tip ellipse, th: shaft length in pixels.
+static void draw_tool (uint16_t *buf, int w, int h, int x, int y, int tw, int eh, int th, int flute)
+{
+    float r = tw / 2.0f, a = eh / 2.0f;
+    int ytop = y - th;
+
+    for(int i = 0; i < tw; i++) {
+        float n = (i + 0.5f - r) / r;                       // -1 left edge .. 1 right edge
+        float e = a * sqrtf(max(0.0f, 1.0f - n * n));       // ellipse half-height in this column
+        float light = constrain(0.25f + 0.75f * (1.0f - fabsf(n + 0.35f)), 0.0f, 1.0f);   // light from the left
+        uint16_t c_body = rgb565(mix(0x003848, COL_RING1, light));
+        uint16_t c_flute = rgb565(mix(0x001820, mix(0x003848, COL_RING1, light), 0.45f));
+        int px = x - (int)r + i, yb = y + (int)lroundf(e), yf = y - flute;
+        // shank down to the flutes, then the flutes with dark helix grooves
+        fill_col(buf, w, h, px, px + 1, ytop, yf, c_body);
+        for(int yy = max(yf, ytop); yy < yb; yy++) {
+            bool groove = ((yy - y + (int)lroundf(n * r * 1.2f)) % max(tw / 2, 6) + max(tw / 2, 6)) % max(tw / 2, 6) < max(tw / 8, 1);
+            fill_col(buf, w, h, px, px + 1, yy, yy + 1, groove ? c_flute : c_body);
+        }
+        // top face
+        uint16_t c_top = rgb565(mix(COL_RING1, 0xFFFFFF, 0.35f + 0.25f * (1.0f - fabsf(n))));
+        fill_col(buf, w, h, px, px + 1, ytop - (int)lroundf(e), ytop + (int)lroundf(e), c_top);
+    }
+}
+
+// Oblique view from the front: the depth map as columns, back rows first, so the rows in front cover
+// what lies behind them. The material top is at max(z1, 0), the slab ends a bit below the deepest cut.
+static void render_3d (uint16_t *buf, const map_view_t *v)
+{
+    const uint16_t c_bg = rgb565(COL_MAP_BG);
+    const float cy = 0.6f, sz = 0.8f;       // depth axis foreshortened, Z height drawn at 0.8
+    int w = v->w, h = v->h;
+
+    for(int i = 0; i < w * h; i++)
+        buf[i] = c_bg;
+
+    int dw = preview.hw, dh = preview.hh;
+    if(!preview.has_depth || dw < 2 || dh < 2)
+        return;
+
+    float ztop = max(preview.z1, 0.0f), zbot = preview.z0 - max(2.0f, (ztop - preview.z0) * 0.1f);
+    float zr = ztop - zbot, mmw = preview.hx1 - preview.hx0, mmh = preview.hy1 - preview.hy0;
+    float pxmm = min((w - 40) / mmw, (h - 70) / (mmh * cy + zr * sz));
+    float s = pxmm * mmw / dw, sv = pxmm * mmh / dh * cy, zpx = pxmm * sz;
+    float ox = (w - dw * s) / 2.0f, oy = (h - (dh * sv + zr * zpx)) / 2.0f + 20.0f;
+
+    // the tool: drawn after the rows behind its center, the rows in front cover what is below their top
+    int t_row = -2, tx = 0, ty = 0, tw = 0, th = 0, eh = 0, fl = 0;
+    if(tool3d.on) {
+        float col = (tool3d.x - preview.hx0) / mmw * dw, row = (preview.hy1 - tool3d.y) / mmh * dh;
+        float u = MAP_X_LEFT ? dw - col : col, vr = MAP_Y_DOWN ? dh - row : row;
+        tx = (int)lroundf(ox + u * s);
+        ty = (int)lroundf(oy + vr * sv + (ztop - tool3d.z) * zpx);
+        tw = max((int)lroundf(tool3d.d * pxmm), 6);
+        th = max((int)lroundf(TOOL3D_LEN * zpx), 30);
+        eh = max((int)lroundf(tw * cy), 3);                 // circle seen at the same tilt as the workpiece
+        fl = min((int)lroundf(tool3d.d * 2.0f * zpx), th * 2 / 3);   // flutes: twice the diameter
+        // after the rows under its footprint: the material there is not higher than the tip, only rows
+        // further in front may cover it
+        t_row = constrain((int)floorf(vr + tool3d.d * 0.5f / mmh * dh), -1, dh - 1);
+    }
+    if(t_row == -1)
+        draw_tool(buf, w, h, tx, ty, tw, eh, th, fl);
+
+    // per level: height below the top in pixels, colour of the top face and of the walls
+    int dz[16];
+    uint16_t c_top[16], c_wall[16];
+    for(int l = 0; l < 16; l++) {
+        float z = l == 0 ? ztop : preview.z1 - (l - 1) / 14.0f * (preview.z1 - preview.z0);
+        float t = (ztop - z) / zr;
+        dz[l] = (int)lroundf((ztop - z) * zpx);
+        uint32_t top = mix(0xB4BAD8, 0x2A2C4C, t);
+        c_top[l] = rgb565(top);
+        c_wall[l] = rgb565(mix(top, 0x000000, 0.45f));
+    }
+    int ybase = (int)lroundf(zr * zpx);
+
+    // the stock in cells (the depth map has 1 mm more around it): -1 outside
+    float r = preview_tool_r();
+    float c_lo = (preview.x0 - r - preview.hx0) / mmw * dw, c_hi = (preview.x1 + r - preview.hx0) / mmw * dw;
+    float r_lo = (preview.hy1 - (preview.y1 + r)) / mmh * dh, r_hi = (preview.hy1 - (preview.y0 - r)) / mmh * dh;
+    const uint16_t c_edge = rgb565(COL_MAP_STOCK);
+
+    auto level = [&](int vr, int u) -> int {
+        if(vr < 0 || vr >= dh || u < 0 || u >= dw)
+            return -1;
+        int row = MAP_Y_DOWN ? dh - 1 - vr : vr, col = MAP_X_LEFT ? dw - 1 - u : u;
+        if(col + 0.5f < c_lo || col + 0.5f > c_hi || row + 0.5f < r_lo || row + 0.5f > r_hi)
+            return -1;
+        uint8_t b = preview.depth[(row * dw + col) >> 1];
+        return col & 1 ? b & 0x0F : b >> 4;
+    };
+
+    for(int vr = 0; vr < dh; vr++) {
+        float yrow = oy + vr * sv;
+        int t0 = (int)lroundf(yrow), t1 = (int)lroundf(yrow + sv);
+        if(t1 <= t0)
+            t1 = t0 + 1;
+        for(int u = 0; u < dw; u++) {
+            int x0 = (int)(ox + u * s), x1 = (int)(ox + (u + 1) * s);
+            if(x1 <= x0)
+                x1 = x0 + 1;
+            int l = level(vr, u);
+            if(l < 0)
+                continue;
+            int yt = t0 + dz[l];
+            // the wall down to the top of the cell in front, which covers the rest; the front row down to the base
+            int lf = level(vr + 1, u);
+            int yw = lf >= 0 ? (int)lroundf(oy + (vr + 1) * sv) + dz[lf] : t0 + ybase + (t1 - t0);
+            // uncut cells at the edge of the stock: light frame
+            bool edge = l == 0 && (lf < 0 || level(vr - 1, u) < 0 || level(vr, u - 1) < 0 || level(vr, u + 1) < 0);
+            fill_col(buf, w, h, x0, x1, yt, yt + (t1 - t0), edge ? c_edge : c_top[l]);
+            if(yw > yt + (t1 - t0))
+                fill_col(buf, w, h, x0, x1, yt + (t1 - t0), yw, c_wall[l]);
+        }
+        if(vr == t_row)
+            draw_tool(buf, w, h, tx, ty, tw, eh, th, fl);
+    }
+}
+
+#endif
+
 static void render (uint16_t *buf, const map_view_t *v, bool fine_grid)
 {
+#if PREVIEW_3D
+    if(v->d3) {
+        render_3d(buf, v);
+        return;
+    }
+#endif
     const uint16_t c_out = rgb565(COL_MAP_OUT), c_bg = rgb565(COL_MAP_BG);
     const uint16_t c_grid = rgb565(COL_MAP_GRID), c_grid2 = rgb565(COL_MAP_GRID2);
     const uint16_t c_work = rgb565(COL_MAP_WORK), c_todo = rgb565(COL_MAP_TODO), c_frame = rgb565(COL_MAP_FRAME);
@@ -294,7 +473,8 @@ static void render (uint16_t *buf, const map_view_t *v, bool fine_grid)
     // with fewer than one pixel per cell look at all cells under the pixel
     int n = step * TRACE_RES > 1.0f ? (int)(step * TRACE_RES) : 1;
 
-    preview_map_t pm = { preview.valid, wco_x(), wco_y(), 0.0f };
+    preview_map_t pm = { preview.valid, wco_x(), wco_y(), 0.0f, preview_tool_r(), 1.6f / v->scale };
+    const uint16_t c_stock = rgb565(COL_MAP_STOCK);
     if(pm.valid) {
         // same scale as on the controller (display_link.c, pass 1)
         float dx = max(preview.x1 - preview.x0, 0.1f), dy = max(preview.y1 - preview.y0, 0.1f);
@@ -329,7 +509,7 @@ static void render (uint16_t *buf, const map_view_t *v, bool fine_grid)
             int pv = preview_bit(&pm, col_mx[px], my);    // the preview is drawn even outside the machine area
 
             if((gx | gy) & G_OUT) {
-                row[px] = pv == 1 ? c_todo : (pv == 0 ? c_work : ((gx | gy) & G_GRID ? c_out_grid : c_out));
+                row[px] = pv == 1 ? c_todo : (pv == 0 ? c_work : (pv == 3 ? c_stock : ((gx | gy) & G_GRID ? c_out_grid : c_out)));
                 continue;
             }
 
@@ -347,6 +527,8 @@ static void render (uint16_t *buf, const map_view_t *v, bool fine_grid)
                 row[px] = tc;
             else if(pv == 1)
                 row[px] = c_todo;
+            else if(pv == 3)
+                row[px] = c_stock;
             else if(pv == 0)
                 row[px] = c_work;
             else if((gx | gy) & G_FRAME)

@@ -87,7 +87,7 @@
 #define PIN_GAMEPAD_RX  3
 #endif
 #ifndef GAMEPAD_BAUD
-#define GAMEPAD_BAUD    921600  // as the gamepad firmware of the D1 Mini
+#define GAMEPAD_BAUD    460800  // as UART_BAUD of the gamepad receiver (D1 Mini, sketch 1.7 or newer)
 #endif
 
 // ---------------------------------------------------------------- map, clock, battery run time
@@ -99,6 +99,12 @@
 #endif
 #ifndef MAP_Y_DOWN
 #define MAP_Y_DOWN      1
+#endif
+
+// 3D view of CNC files (oblique view of the depth map from the controller, display_link.c
+// DISPLAY_PREVIEW_3D): a third step of the view button. 0: preview as before, without 3D.
+#ifndef PREVIEW_3D
+#define PREVIEW_3D      1
 #endif
 
 // Time zone of the clock as a POSIX TZ string, e.g. "GMT0BST,M3.5.0/1,M10.5.0" (UK), "EST5EDT,M3.2.0,M11.1.0" (US East)

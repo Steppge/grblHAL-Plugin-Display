@@ -210,7 +210,15 @@ static void usb_task (void *arg)
                     if(gp_len < sizeof(gp_line))
                         gp_line[gp_len++] = buf[i];
                     if(buf[i] == '\n') {
-                        if(udp_open && gp_len < sizeof(gp_line)) {
+                        // without a controller ($GP,<seq>,0,...) only every 10th packet (200 ms, the gamepad
+                        // plugin allows 300 ms): fewer WiFi packets over SDIO to the co-processor
+                        static uint8_t idle_skip = 0;
+                        const char *c = gp_len > 6 && !memcmp(gp_line, "$GP,", 4) ? (const char *)memchr(gp_line + 4, ',', gp_len - 4) : NULL;
+                        bool idle = c && c[1] == '0' && c[2] == ',';
+                        bool send = !idle || ++idle_skip >= 10;
+                        if(send)
+                            idle_skip = 0;
+                        if(send && udp_open && gp_len < sizeof(gp_line)) {
                             udp.beginPacket(WiFi.gatewayIP(), BRIDGE_GAMEPAD_PORT);
                             udp.write((const uint8_t *)gp_line, gp_len);
                             udp.endPacket();

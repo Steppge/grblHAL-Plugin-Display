@@ -51,7 +51,7 @@ enum action_t {
     A_None = -1,
     A_Menu, A_Back, A_Home, A_Unlock, A_Reset, A_ForceUnlock, A_ZeroXY, A_ZeroZ,
     A_Hold, A_Resume, A_Load, A_Start, A_FeedDn, A_FeedUp, A_FeedReset, A_PwrDn, A_PwrUp, A_PwrReset,
-    A_Zoom, A_ZoomBack, A_ZoomStop, A_View,
+    A_Zoom, A_ZoomBack, A_ZoomStop, A_View, A_CornerGo,
     A_ScrMove, A_ScrProbe, A_ScrLaser, A_ScrSd,
     A_JogXm, A_JogXp, A_JogYm, A_JogYp, A_JogZm, A_JogZp,
     A_Step0, A_Step1, A_Step2, A_Step3, A_Step4,
@@ -91,7 +91,7 @@ static struct {
     uint8_t probe_feed, laser_pwr, laser_time, step;
 } cfg = { 0.0f, 2, 4, 3, 3 };
 
-static ui_btn_t btns[192];
+static ui_btn_t btns[200];
 static int n_btns = 0;
 static screen_t screen = S_Main;
 static lv_obj_t *scr_obj[S_Count];
@@ -104,18 +104,26 @@ static bool touch_locked = false;       // short knob press in the CNC mode, not
 // main
 static lv_obj_t *map_card, *map_canvas, *map_name, *map_hint, *dro_card, *dro_val[3], *dro_mach[3];
 static lv_obj_t *prog_track, *prog_fill, *lbl_pct, *lbl_sub, *tool_h, *tool_v, *tool_c;
-static ui_btn_t *row[ROW_N], *b_zoom, *b_view;
+static ui_btn_t *row[ROW_N], *b_zoom, *b_view, *b_corner;
+// preview corner: tapping the map steps through them, the position card shows it, GO moves there
+enum { CORNER_LL, CORNER_LR, CORNER_UR, CORNER_UL, CORNER_MID, CORNERS };
+static uint8_t corner_sel = CORNER_LL;
+static lv_obj_t *corner_dot, *dro_rname[3][3], *dro_rval[3][3];    // right side: tool, stock, path (Z: top, cut)
+#define DRO_RVAL_DX  58     // values right of the names
+#define TOOL3D_D         3.0f   // tool diameter in the 3D view without a tool list (mm)
+#define DRO_RIGHT_X 240     // left edge of "stock ..." in the position card
 static lv_obj_t *jog_box, *ovr_box, *ovr_val[2];
 static ui_btn_t *b_step_main[5];
 static int map_ox = 6, map_oy = 6;     // canvas position in the map card
 static bool view_preview = false;       // map card shows the G-code preview instead of the machine area
+static bool view_3d = false;            // ... as 3D view (CNC files with a depth map, PREVIEW_3D)
 static uint16_t preview_seen = 0;
 static uint16_t *map_buf = NULL, *map_back = NULL;   // shown and rendered in the background (map_render_start())
 static int map_w = 0, map_h = 0;
 static map_view_t map_v;
 
 // zoom
-static lv_obj_t *zoom_canvas, *zoom_chip, *zoom_dot, *zoom_lbl, *ztool_h, *ztool_v, *ztool_c;
+static lv_obj_t *zoom_canvas, *zoom_chip, *zoom_dot, *zoom_lbl, *ztool_h, *ztool_v, *ztool_c, *ztool_ring, *tool_ring;
 static ui_btn_t *b_zback, *b_stop;
 static uint16_t *zoom_buf = NULL, *zoom_back = NULL;
 static map_view_t zoom_v;
@@ -143,9 +151,10 @@ static char edit_buf[24] = "";
 static uint16_t setlist_seen = 0;
 static bool set_verify = false;         // a changed value is waiting for its confirmation
 static uint32_t set_verify_at = 0;
-// Z height bar next to the map: machine Z range, work zero (yellow) and the tool (cyan)
+// Z height bar next to the map: machine Z range, Z range of the preview (light yellow), work zero (yellow)
+// and the tool (cyan)
 struct zbar_t {
-    lv_obj_t *track, *zero, *mark;
+    lv_obj_t *track, *band, *zero, *mark;
     int h;
 };
 static zbar_t zbar_main, zbar_zoom;
@@ -760,6 +769,34 @@ static void crosshair (lv_obj_t *parent, int size, lv_obj_t **h, lv_obj_t **v, l
     lv_obj_set_style_shadow_opa(*c, 200, 0);
 }
 
+// tool size around the crosshair (CNC files with a tool list): a ring as wide as the tool
+static lv_obj_t *tool_ring_make (lv_obj_t *parent)
+{
+    lv_obj_t *r = box(parent, 0, 0, 10, 10);
+
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(r, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_color(r, C(COL_RING1), 0);
+    lv_obj_set_style_border_width(r, 2, 0);
+    lv_obj_set_style_bg_color(r, C(COL_RING1), 0);
+    lv_obj_set_style_bg_opa(r, 40, 0);
+    show(r, false);
+
+    return r;
+}
+
+static void tool_ring_move (const map_view_t *v, lv_obj_t *r, int ox, int oy)
+{
+    int px, py, d = (int)lroundf(preview_tool_r() * 2.0f * v->scale);
+    bool on = d >= 8 && mc.online && map_to_px(v, mc.mpos[0], mc.mpos[1], &px, &py);
+
+    show(r, on);
+    if(on) {
+        lv_obj_set_size(r, d, d);
+        lv_obj_set_pos(r, ox + px - d / 2, oy + py - d / 2);
+    }
+}
+
 static void crosshair_move (const map_view_t *v, lv_obj_t *h, lv_obj_t *vl, lv_obj_t *c, int ox, int oy)
 {
     int px, py;
@@ -804,6 +841,13 @@ static void zbar_make (zbar_t *z, lv_obj_t *parent, int x, int y, int h)
     lv_obj_set_style_bg_opa(z->track, LV_OPA_COVER, 0);
     lv_obj_remove_flag(z->track, LV_OBJ_FLAG_CLICKABLE);
 
+    z->band = box(z->track, 0, 0, 12, 3);
+    lv_obj_set_style_radius(z->band, 2, 0);
+    lv_obj_set_style_bg_color(z->band, C(COL_PWR), 0);
+    lv_obj_set_style_bg_opa(z->band, 80, 0);
+    lv_obj_remove_flag(z->band, LV_OBJ_FLAG_CLICKABLE);
+    show(z->band, false);
+
     z->zero = box(z->track, -5, 0, 22, 3);
     lv_obj_set_style_bg_color(z->zero, C(COL_PWR), 0);
     lv_obj_set_style_bg_opa(z->zero, LV_OPA_COVER, 0);
@@ -840,6 +884,17 @@ static void zbar_update (zbar_t *z)
     if(in)
         lv_obj_set_y(z->zero, (int)lroundf((1.0f - (z0 - zmin) / (zmax - zmin)) * (z->h - 3)));
     show(z->mark, mc.online);
+
+    // Z range of the cutting moves of the previewed file
+    bool band = mc.online && preview.valid && preview.has_z;
+    if(band) {
+        float top = constrain(z0 + preview.z1, zmin, zmax), bot = constrain(z0 + preview.z0, zmin, zmax);
+        int y0 = (int)lroundf((1.0f - (top - zmin) / (zmax - zmin)) * z->h);
+        int y1 = (int)lroundf((1.0f - (bot - zmin) / (zmax - zmin)) * z->h);
+        lv_obj_set_pos(z->band, 0, y0);
+        lv_obj_set_height(z->band, max(y1 - y0, 3));
+    }
+    show(z->band, band);
 }
 
 static void layout_main (void)
@@ -921,6 +976,7 @@ static void build_main (lv_obj_t *s)
     map_canvas = lv_canvas_create(map_card);
     lv_obj_set_style_radius(map_canvas, 12, 0);
     lv_obj_set_style_clip_corner(map_canvas, true, 0);
+    tool_ring = tool_ring_make(map_card);
     crosshair(map_card, 14, &tool_h, &tool_v, &tool_c);
     zbar_make(&zbar_main, map_card, MAP_W - 28, 12, MAP_H - 24);
     map_name = label(map_card, &lv_font_montserrat_18, 0xD2D7F0, "");
@@ -934,13 +990,29 @@ static void build_main (lv_obj_t *s)
     lv_obj_set_style_pad_all(map_hint, 12, 0);
     lv_obj_align(map_hint, LV_ALIGN_CENTER, 0, 0);
     show(map_hint, false);
+    // round buttons stacked at the right edge next to the Z bar: zoom, view, GO
     b_zoom = btn(map_card, MAP_W - 34 - 64, MAP_H - 70, 56, 56, 28, NULL, NULL, 0, 0, A_Zoom);
     lv_obj_set_style_bg_color(b_zoom->obj, C(0x141632), 0);
     lv_obj_set_style_bg_opa(b_zoom->obj, 220, 0);
     expand_icon(b_zoom->obj);
-    b_view = btn(map_card, MAP_W - 34 - 128, MAP_H - 70, 56, 56, 28, LV_SYMBOL_IMAGE, NULL, 0, 0, A_View);
+    b_view = btn(map_card, MAP_W - 34 - 64, MAP_H - 134, 56, 56, 28, LV_SYMBOL_IMAGE, NULL, 0, 0, A_View);
     lv_obj_set_style_bg_color(b_view->obj, C(0x141632), 0);
     lv_obj_set_style_bg_opa(b_view->obj, 220, 0);
+    b_corner = btn(map_card, MAP_W - 34 - 64, MAP_H - 198, 56, 56, 28, NULL, "GO", COL_GREEN1, COL_GREEN2, A_None, A_CornerGo, 600);     // hold 0.6 s
+    corner_dot = box(map_card, 0, 0, 18, 18);
+    lv_obj_remove_flag(corner_dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(corner_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(corner_dot, C(COL_PWR), 0);
+    lv_obj_set_style_bg_opa(corner_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(corner_dot, C(0x0A0C1E), 0);
+    lv_obj_set_style_border_width(corner_dot, 3, 0);
+    show(corner_dot, false);
+    lv_obj_add_event_cb(map_card, [](lv_event_t *e) {
+        if(!preview.valid || view_3d)
+            return;
+        beep_click();
+        corner_sel = (corner_sel + 1) % CORNERS;
+    }, LV_EVENT_CLICKED, NULL);
 
     // position, tapping it opens Go to (not during a job)
     dro_card = glass(s, SIDE_X, CARD_Y, SIDE_W, DRO_H, 18);
@@ -962,14 +1034,22 @@ static void build_main (lv_obj_t *s)
         lv_obj_t *l = label(badge, &lv_font_montserrat_24, COL_TEXT, i == 0 ? "X" : (i == 1 ? "Y" : "Z"));
         lv_obj_center(l);
 
+        // left: work position centered over the machine position
         dro_val[i] = label(dro_card, &lv_font_montserrat_36, COL_TEXT, "0.00");
-        lv_obj_set_style_text_align(dro_val[i], LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_set_width(dro_val[i], SIDE_W - 96);
-        lv_obj_set_pos(dro_val[i], 72, y - 2);
+        lv_obj_set_style_text_align(dro_val[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(dro_val[i], DRO_RIGHT_X - 70);
+        lv_obj_set_pos(dro_val[i], 62, y - 2);
         dro_mach[i] = label(dro_card, &lv_font_montserrat_14, COL_MUTED, "");
-        lv_obj_set_style_text_align(dro_mach[i], LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_set_width(dro_mach[i], SIDE_W - 96);
-        lv_obj_set_pos(dro_mach[i], 72, y + 38);
+        lv_obj_set_style_text_align(dro_mach[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(dro_mach[i], DRO_RIGHT_X - 70);
+        lv_obj_set_pos(dro_mach[i], 62, y + 38);
+        // right: selected corner of the preview (Z: deepest cut) centered over the workpiece range
+        for(int k = 0; k < 3; k++) {
+            dro_rname[i][k] = label(dro_card, &lv_font_montserrat_14, COL_MUTED, "");
+            lv_obj_set_pos(dro_rname[i][k], DRO_RIGHT_X, y + 2 + k * 18);
+            dro_rval[i][k] = label(dro_card, &lv_font_montserrat_14, COL_TEXT, "");
+            lv_obj_set_pos(dro_rval[i][k], DRO_RIGHT_X + DRO_RVAL_DX, y + 2 + k * 18);
+        }
     }
 
     // below: jog cross with the step size when idle, overrides and progress during a job;
@@ -1038,6 +1118,7 @@ static void build_zoom (lv_obj_t *s)
     lv_canvas_set_buffer(zoom_canvas, zoom_buf, SCR_W, SCR_H, LV_COLOR_FORMAT_RGB565);
     lv_obj_set_pos(zoom_canvas, 0, 0);
     zbar_make(&zbar_zoom, s, SCR_W - 26, 90, 300);
+    ztool_ring = tool_ring_make(s);
     crosshair(s, 24, &ztool_h, &ztool_v, &ztool_c);
 
     zoom_chip = glass(s, 92, 14, 380, 50, 25);
@@ -2178,6 +2259,29 @@ static void probe_poll (void)
     }
 }
 
+// selected corner of the stock (path widened by the tool radius), work coordinates
+static float corner_pos (int axis)
+{
+    float r = preview_tool_r();
+    float lo = (axis ? preview.y0 : preview.x0) - r, hi = (axis ? preview.y1 : preview.x1) + r;
+
+    if(corner_sel == CORNER_MID)
+        return (lo + hi) / 2.0f;
+    if(axis)
+        return corner_sel == CORNER_UR || corner_sel == CORNER_UL ? hi : lo;
+    return corner_sel == CORNER_LR || corner_sel == CORNER_UR ? hi : lo;
+}
+
+// tool center with its cutting edge on the selected corner of the stock, the tool outside the stock
+// (touching it from outside, to align the stock): moved outwards by the tool radius (the middle stays)
+static float tool_pos (int axis)
+{
+    float r = preview_tool_r(), c = corner_pos(axis);
+    float mid = ((axis ? preview.y0 : preview.x0) + (axis ? preview.y1 : preview.x1)) / 2.0f;
+
+    return corner_sel == CORNER_MID ? c : (c < mid ? c - r : c + r);
+}
+
 static void action_run (int action, int arg)
 {
     char cmd[80];
@@ -2346,7 +2450,25 @@ static void action_run (int action, int arg)
         case A_PwrReset:    link_rt(CMD_OVR_SPIN_RESET); break;
         case A_Zoom:        screen_show(S_Zoom); break;
         case A_ZoomBack:    screen_show(S_Main); break;
-        case A_View:        view_preview = !view_preview; last_map = 0; break;
+        case A_View:        // machine area -> preview -> 3D (CNC files) -> machine area
+#if PREVIEW_3D
+            if(view_preview && !view_3d && preview.has_depth)
+                view_3d = true;
+            else {
+                view_preview = !view_preview;
+                view_3d = false;
+            }
+#else
+            view_preview = !view_preview;
+#endif
+            last_map = 0;
+            break;
+        case A_CornerGo:
+            if(preview.valid && mc.online && mc.state == STATE_IDLE) {
+                snprintf(cmd, sizeof(cmd), "G90G0X%.3fY%.3f", tool_pos(0), tool_pos(1));     // tool edge on the corner
+                link_cmd(cmd);
+            }
+            break;
         case A_ZoomStop:
             // first tap: feed hold and laser off, then ABORT resets
             if((mc.state & STATE_HOLD) && (mc.flags & DL_FLAG_HOLD_DONE))
@@ -2630,6 +2752,36 @@ static void update_main (void)
         snprintf(buf, sizeof(buf), "machine %.2f", mc.mpos[i]);
         set_text(dro_mach[i], buf);
     }
+    for(int i = 0; i < 3; i++) {
+        // X/Y: cutting edge of the tool facing the selected corner, stock (path + tool radius) - both only
+        // with a tool list -, path; Z: top (where Z0 is set) and the cut range
+        const char *name[3] = { "", "", "" };
+        char val[3][32] = { "", "", "" };
+        float r = preview_tool_r();
+        if(preview.valid && i < 2) {
+            float lo = i ? preview.y0 : preview.x0, hi = i ? preview.y1 : preview.x1;
+            int k = 0;
+            if(r > 0.0f) {
+                // cutting edge of the tool on the side facing the selected corner (0 = edge on the corner)
+                float c = corner_pos(i), mid = (lo + hi) / 2.0f;
+                name[k] = "tool";
+                snprintf(val[k++], sizeof(val[0]), "%.2f", corner_sel == CORNER_MID ? mc.wpos[i] : (c < mid ? mc.wpos[i] + r : mc.wpos[i] - r));
+                name[k] = "stock";
+                snprintf(val[k++], sizeof(val[0]), "%.2f .. %.2f", lo - r, hi + r);
+            }
+            name[k] = "path";
+            snprintf(val[k], sizeof(val[0]), "%.2f .. %.2f", lo, hi);
+        } else if(preview.valid && preview.has_z) {
+            name[0] = "top";
+            snprintf(val[0], sizeof(val[0]), "%.2f", preview.z1);
+            name[1] = "cut";
+            snprintf(val[1], sizeof(val[1]), "%.2f .. %.2f", preview.z1, preview.z0);
+        }
+        for(int k = 0; k < 3; k++) {
+            set_text(dro_rname[i][k], name[k]);
+            set_text(dro_rval[i][k], val[k]);
+        }
+    }
 
     // jog cross when idle, overrides and progress during a job
     show(jog_box, !job_mode);
@@ -2683,18 +2835,45 @@ static void update_main (void)
     if(preview.seq != preview_seen) {
         preview_seen = preview.seq;
         view_preview = preview.valid;
+        view_3d = false;
+        corner_sel = CORNER_LL;
         last_map = 0;
     }
     bool pv = view_preview && preview.valid;
+#if PREVIEW_3D
+    bool p3 = pv && view_3d && preview.has_depth && !job_mode;     // a job shows its progress in the flat view
+#else
+    bool p3 = false;
+#endif
     show(map_hint, !job_mode && !pv && preview.valid && !mc.env_valid);
     btn_enable(b_view, preview.valid);
+    // the icon shows the next view
+#if PREVIEW_3D
+    set_text(b_view->icon, pv && !p3 && preview.has_depth && !job_mode ? "3D" : (pv ? LV_SYMBOL_GPS : LV_SYMBOL_IMAGE));
+#else
     set_text(b_view->icon, pv ? LV_SYMBOL_GPS : LV_SYMBOL_IMAGE);
+#endif
     if(!job_mode)
         set_text(map_name, pv ? preview.name : (preview.loading ? "Loading preview..." : (*sd_sel ? sd_sel : "")));
+
+#if PREVIEW_3D
+    // 3D view: the tool is part of the image, a move draws it anew (at the redraw interval)
+    static float t3_last[3];
+    map_3d_tool(p3 && mc.online, mc.wpos[0], mc.wpos[1], mc.wpos[2], preview.tool_d > 0.0f ? preview.tool_d : TOOL3D_D);
+    if(p3 && mc.online && memcmp(t3_last, mc.wpos, sizeof(t3_last)) && millis() - last_map >= MAP_REDRAW_MS && !map_render_busy()) {
+        memcpy(t3_last, mc.wpos, sizeof(t3_last));
+        last_map = 0;
+    }
+#endif
 
     layout_main();
     if(map_back && (map_changed() || !last_map) && millis() - last_map >= MAP_REDRAW_MS && !map_render_busy()) {
         map_view_t v;
+#if PREVIEW_3D
+        if(p3)
+            map_view_3d(&v, map_w, map_h);
+        else
+#endif
         if(pv)
             map_view_preview(&v, map_w, map_h);
         else
@@ -2702,8 +2881,20 @@ static void update_main (void)
         if(map_render_start(map_back, map_buf, &v, pv, MAP_TAG_MAIN))     // 10 mm grid in the preview, 50 mm for the whole machine
             last_map = millis();
     }
+    tool_ring_move(&map_v, tool_ring, map_ox, map_oy);
     crosshair_move(&map_v, tool_h, tool_v, tool_c, map_ox, map_oy);
     zbar_update(&zbar_main);
+
+    // selected corner: dot in the map, GO moves there (idle, not during a job)
+    int cx, cy;
+    bool dot = preview.valid && mc.online &&
+               map_to_px(&map_v, corner_pos(0) + mc.mpos[0] - mc.wpos[0], corner_pos(1) + mc.mpos[1] - mc.wpos[1], &cx, &cy);
+    show(corner_dot, dot);
+    if(dot)
+        lv_obj_set_pos(corner_dot, map_ox + cx - 9, map_oy + cy - 9);
+
+    show(b_corner->obj, pv && !p3 && !job_mode);
+    btn_enable(b_corner, pv && !p3 && !job_mode && idle);
 }
 
 static void update_zoom (void)
@@ -2746,6 +2937,7 @@ static void update_zoom (void)
         if(map_render_start(zoom_back, zoom_buf, &v, true, MAP_TAG_ZOOM))
             last_map = millis();
     }
+    tool_ring_move(&zoom_v, ztool_ring, 0, 0);
     crosshair_move(&zoom_v, ztool_h, ztool_v, ztool_c, 0, 0);
     zbar_update(&zbar_zoom);
 }

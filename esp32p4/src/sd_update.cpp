@@ -182,11 +182,13 @@ static const char *gp_flash (FILE *f, long size, bool show)
     Serial2.setRxBufferSize(1024);
     Serial2.begin(GAMEPAD_BAUD, SERIAL_8N1, PIN_GAMEPAD_RX, PIN_GAMEPAD_TX);
 
-    // the receiver may still be starting: ask again every second
+    // the receiver may still be starting: ask again every second, by turns with GAMEPAD_BAUD and with the
+    // 921600 of receivers before sketch 1.7 (the update to 1.7 itself comes from one of them)
     const char *why = "receiver does not answer (old firmware: flash it once over USB)";
     snprintf(body, sizeof(body), "FW,%ld,%08lx", size, (unsigned long)crc);
-    for(uint32_t t0 = millis(); millis() - t0 < GP_HELLO_MS; ) {
+    for(uint32_t t0 = millis(), i = 0; millis() - t0 < GP_HELLO_MS; i++) {
         char ans[16];
+        Serial2.updateBaudRate(GAMEPAD_BAUD != 921600 && (i & 1) ? 921600 : GAMEPAD_BAUD);
         gp_send(body);
         if(gp_wait("FA,", ans, sizeof(ans), 1000)) {
             why = ans[3] == '1' ? NULL : "refused by the receiver";

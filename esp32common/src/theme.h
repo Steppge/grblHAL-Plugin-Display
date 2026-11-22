@@ -40,3 +40,4 @@
 #define COL_MAP_FRAME   0x7A7AD8    // edge of the machine area
 #define COL_MAP_WORK    0x3A2E22    // area of the G-code preview
 #define COL_MAP_TODO    0x8C7A64    // preview: still to be burned/cut
+#define COL_MAP_STOCK   0xF0E2B8    // preview: frame of the stock (path + tool radius)

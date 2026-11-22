@@ -272,8 +272,14 @@ static void handle_line (char *line)
         files.seq++;
     } else if(!strncmp(line, "PB,", 3)) {
         unsigned w, h;
-        if(sscanf(line + 3, "%f,%f,%f,%f,%u,%u", &preview.x0, &preview.y0, &preview.x1, &preview.y1, &w, &h) == 6 &&
-            w <= PREVIEW_W_MAX && h <= PREVIEW_H_MAX && w % 8 == 0) {
+        int n = sscanf(line + 3, "%f,%f,%f,%f,%u,%u,%f,%f", &preview.x0, &preview.y0, &preview.x1, &preview.y1, &w, &h,
+                       &preview.z0, &preview.z1);
+        preview.has_z = n == 8;     // older plugins send no Z range
+#if PREVIEW_3D
+        preview.has_depth = false;
+        preview.hw = preview.hh = 0;
+#endif
+        if(n >= 6 && w <= PREVIEW_W_MAX && h <= PREVIEW_H_MAX && w % 8 == 0) {
             preview.w = w;
             preview.h = h;
             memset(preview.bits, 0, sizeof(preview.bits));
@@ -289,9 +295,33 @@ static void handle_line (char *line)
                 bits[k] = (uint8_t)strtoul(hex, NULL, 16);
             }
         }
+#if PREVIEW_3D
+    } else if(!strncmp(line, "PH,", 3)) {
+        unsigned w, h;
+        preview.tool_d = 0.0f;
+        if(preview.loading && sscanf(line + 3, "%f,%f,%f,%f,%u,%u,%f", &preview.hx0, &preview.hy0, &preview.hx1, &preview.hy1,
+                                     &w, &h, &preview.tool_d) >= 6 && w <= PREVIEW_W_MAX && h <= PREVIEW_H_MAX && w % 2 == 0) {
+            preview.hw = w;
+            preview.hh = h;
+            memset(preview.depth, 0, sizeof(preview.depth));
+        }
+    } else if(!strncmp(line, "PZ,", 3)) {
+        char *p;
+        unsigned row = strtoul(line + 3, &p, 10), x = *p == ',' ? strtoul(p + 1, &p, 10) : 0xFFFF;
+        if(preview.loading && *p == ',' && row < preview.hh) {
+            for(p++; x < preview.hw && isxdigit((unsigned char)*p); x++, p++) {
+                uint8_t v = *p <= '9' ? *p - '0' : (*p & 0x07) + 9;
+                uint8_t *b = &preview.depth[(row * preview.hw + x) >> 1];
+                *b = x & 1 ? (*b & 0xF0) | v : (*b & 0x0F) | (v << 4);
+            }
+        }
+#endif
     } else if(!strncmp(line, "PE,", 3)) {
         if(preview.loading) {
             preview.valid = atoi(line + 3) > 0 && preview.w;
+#if PREVIEW_3D
+            preview.has_depth = preview.valid && preview.has_z && preview.hw;
+#endif
             preview.loading = false;
             preview.seq++;
         }
@@ -329,6 +359,10 @@ void link_preview (const char *name)
 
     preview.valid = false;
     preview.w = preview.h = 0;
+#if PREVIEW_3D
+    preview.has_depth = false;
+    preview.hw = preview.hh = 0;
+#endif
     preview.seq++;
     strlcpy(preview.name, name, sizeof(preview.name));
     if((preview.loading = *name)) {

@@ -70,9 +70,15 @@
     >FL*<hh>                list the G-code files on the SD card
     >LF,<power %>,<ms>*<hh> laser test pulse, only when idle with the spindle/laser off
     >PV,<file name>*<hh>    preview of a G-code file on the SD card (only when idle), answered with
-    $PB,<x0>,<y0>,<x1>,<y1>,<w>,<h>*<hh>   bounds of the burned/cut moves (work coordinates, mm)
-                                            and bitmap size, w a multiple of 8
+    $PB,<x0>,<y0>,<x1>,<y1>,<w>,<h>[,<z0>,<z1>]*<hh>   bounds of the burned/cut moves (work coordinates,
+                                            mm) and bitmap size, w a multiple of 8; Z range of the cutting
+                                            moves only when the file moves Z
     $PR,<row>,<hex>*<hh>    bitmap row (row 0 = top = y1), MSB first
+    $PH,<x0>,<y0>,<x1>,<y1>,<w>,<h>,<d>*<hh>   depth map of CNC files (DISPLAY_PREVIEW_3D) after the bitmap
+                                            rows: bounds incl. the tool radius, size, largest tool
+                                            diameter of the tool list (0: none)
+    $PZ,<row>,<x>,<hex>*<hh>  depth map row from pixel x, one hex digit per pixel: 0 = not cut,
+                                            1 = z1 ... 15 = z0 (deepest)
     $PE,<rows>*<hh>         end, 0 = nothing burned/cut, -1 = not possible (busy, no file)
     >SL*<hh>                all settings (as $$), answered one per line with
     $SV|<id>|<group>|<editable>|<datatype>|<value>|<unit>|<min>|<max>|<name>|<format>*<hh>
@@ -352,7 +358,18 @@ static void pulse_poll (sys_state_t state)
 #define PV_ROWS_CALL      2         // bitmap rows sent per realtime call
 #define PV_ARC_DEG     10.0f        // arcs are drawn as chords of this angle
 
-typedef enum { Pv_Off, Pv_Bounds, Pv_Draw, Pv_Send } pv_phase_t;
+// Depth map for the 3D view of CNC files (files that move Z): per pixel the deepest cut in 15 steps,
+// widened by the tool diameter from the tool list in the file ("(T1 D=6 ...)", as Fusion 360 writes it),
+// without one only the tool center. 0: no depth map, the preview is as before.
+#ifndef DISPLAY_PREVIEW_3D
+#define DISPLAY_PREVIEW_3D  1
+#endif
+#define PV_TOOLS         32         // tool numbers 0-31 from the tool list
+#define PV_CMT           48         // comment characters kept for the tool list
+
+typedef enum { Pv_Off, Pv_Bounds, Pv_Draw, Pv_Send, Pv_SendDepth } pv_phase_t;
+
+static bool pv_number (char **p, float *v);
 
 static struct {
     pv_phase_t phase;
@@ -361,26 +378,44 @@ static struct {
     uint8_t len;
     bool comment;
     // modal state of the parser
-    float x, y, scale;
-    bool absolute, laser, inch;
+    float x, y, z, scale;
+    bool absolute, laser, inch, z_seen;
     uint8_t motion;
     float s;
     // result
-    bool any;
-    float x0, y0, x1, y1;
+    bool any, any_z;
+    float x0, y0, x1, y1, z0, z1;
     uint16_t w, h, row;
     uint8_t bits[PV_W_MAX / 8 * PV_H_MAX];
+#if DISPLAY_PREVIEW_3D
+    // tool list from the comments, diameter of the tool in use (0: unknown, the center is drawn)
+    char cmt[PV_CMT];
+    uint8_t cmt_len, tools;
+    float tool_d[PV_TOOLS], tool_one, d;
+    // depth map: 4 bits per pixel, 0 = not cut, 1 = z1 ... 15 = z0; row 0 = top (hy1)
+    float hx0, hy0, hx1, hy1, hscale, dmax;
+    uint16_t hw, hh;
+    int16_t last_cx, last_cy;
+    uint8_t last_lvl;
+    uint8_t depth[PV_W_MAX / 2 * PV_H_MAX];
+#endif
 } pv;
 
 static void pv_reset_parser (void)
 {
-    pv.x = pv.y = 0.0f;
+    pv.x = pv.y = pv.z = 0.0f;
+    pv.z_seen = false;
     pv.absolute = true;
     pv.laser = pv.inch = false;
     pv.motion = 0;
     pv.s = 0.0f;
     pv.len = 0;
     pv.comment = false;
+#if DISPLAY_PREVIEW_3D
+    pv.cmt_len = 0;
+    pv.d = pv.tools == 1 ? pv.tool_one : 0.0f;  // one tool in the list: that one, also without a T word
+    pv.last_cx = -1;
+#endif
 }
 
 static void pv_stop (int result)
@@ -416,16 +451,81 @@ static void pv_point (float x, float y)
     }
 }
 
-static void pv_segment (float xa, float ya, float xb, float yb)
+#if DISPLAY_PREVIEW_3D
+
+// the tool at x, y with its tip at z: the deeper level wins
+static void pv_depth (float x, float y, float z)
+{
+    if(!pv.any_z || !pv.hw)
+        return;
+
+    int lvl = pv.z1 > pv.z0 ? 1 + (int)lroundf((pv.z1 - z) / (pv.z1 - pv.z0) * 14.0f) : 15;
+    lvl = lvl < 1 ? 1 : (lvl > 15 ? 15 : lvl);
+    int cx = (int)((x - pv.hx0) * pv.hscale), cy = (int)((pv.hy1 - y) * pv.hscale);
+    if(cx == pv.last_cx && cy == pv.last_cy && lvl == pv.last_lvl)
+        return;         // same spot as the last stamp
+    pv.last_cx = cx;
+    pv.last_cy = cy;
+    pv.last_lvl = lvl;
+
+    int r = (int)(pv.d * 0.5f * pv.hscale + 0.5f), r2 = r * r + r;
+    for(int dy = -r; dy <= r; dy++) {
+        int py = cy + dy;
+        if(py < 0 || py >= pv.hh)
+            continue;
+        for(int dx = -r; dx <= r; dx++) {
+            int px = cx + dx;
+            if(px < 0 || px >= pv.hw || dx * dx + dy * dy > r2)
+                continue;
+            uint8_t *b = &pv.depth[(py * pv.hw + px) >> 1];
+            int shift = px & 1 ? 0 : 4;
+            if(((*b >> shift) & 0x0F) < lvl)
+                *b = (*b & (0xF0 >> shift)) | (lvl << shift);
+        }
+    }
+}
+
+// tool list line "T1 D=6 CR=0 - ZMIN=-22.5 - flat end mill" (upper case)
+static void pv_comment (void)
+{
+    char *p = pv.cmt;
+    float t, v;
+
+    pv.cmt[pv.cmt_len] = '\0';
+    pv.cmt_len = 0;
+    while(*p == ' ')
+        p++;
+    if(*p++ != 'T' || !pv_number(&p, &t) || (p = strstr(p, "D=")) == NULL)
+        return;
+    p += 2;
+    if(pv_number(&p, &v) && v > 0.0f && t >= 0.0f && t < PV_TOOLS && pv.tool_d[(int)t] == 0.0f) {
+        pv.tool_d[(int)t] = v;
+        pv.tool_one = v;
+        pv.tools++;
+    }
+}
+
+#endif
+
+static void pv_segment (float xa, float ya, float za, float xb, float yb, float zb)
 {
     if(pv.phase == Pv_Bounds) {
         pv_point(xa, ya);
         pv_point(xb, yb);
     } else {
         float dx = xb - xa, dy = yb - ya;
+#if DISPLAY_PREVIEW_3D
+        int n = (int)(fmaxf(fabsf(dx), fabsf(dy)) * fmaxf(pv.scale, pv.hscale)) + 1;
+        for(int i = 0; i <= n; i++) {
+            pv_point(xa + dx * i / n, ya + dy * i / n);
+            pv_depth(xa + dx * i / n, ya + dy * i / n, za + (zb - za) * i / n);
+        }
+#else
+        (void)za; (void)zb;
         int n = (int)(fmaxf(fabsf(dx), fabsf(dy)) * pv.scale) + 1;
         for(int i = 0; i <= n; i++)
             pv_point(xa + dx * i / n, ya + dy * i / n);
+#endif
     }
 }
 
@@ -464,8 +564,8 @@ static bool pv_number (char **p, float *v)
 static void pv_execute (void)
 {
     char *p = pv.line;
-    float x = pv.x, y = pv.y, i = 0.0f, j = 0.0f, f = pv.inch ? 25.4f : 1.0f;
-    bool has_xy = false;
+    float x = pv.x, y = pv.y, z = pv.z, i = 0.0f, j = 0.0f, f = pv.inch ? 25.4f : 1.0f;
+    bool has_xy = false, has_z = false;
 
     if(*p == '[' || *p == '#' || *p == 'O')     // expressions, parameters and subroutines are not followed
         return;
@@ -496,17 +596,39 @@ static void pv_execute (void)
             case 'S': pv.s = v; break;
             case 'X': x = pv.absolute ? v * f : pv.x + v * f; has_xy = true; break;
             case 'Y': y = pv.absolute ? v * f : pv.y + v * f; has_xy = true; break;
+            case 'Z': z = pv.absolute ? v * f : pv.z + v * f; has_z = true; pv.z_seen = true; break;
             case 'I': i = v * f; break;
             case 'J': j = v * f; break;
+#if DISPLAY_PREVIEW_3D
+            case 'T': pv.d = v >= 0.0f && v < PV_TOOLS ? pv.tool_d[(int)v] : 0.0f; break;
+#endif
         }
     }
 
-    if(!has_xy)
+    // Z range: end points of cutting moves (plunges included), rapids to the safe height do not count
+    if((has_xy || has_z) && pv.z_seen && pv.phase == Pv_Bounds && pv.motion && pv.laser && pv.s > 0.0f) {
+        if(!pv.any_z) {
+            pv.z0 = pv.z1 = z;
+            pv.any_z = true;
+        } else {
+            if(z < pv.z0) pv.z0 = z;
+            if(z > pv.z1) pv.z1 = z;
+        }
+    }
+    float za = pv.z;
+    pv.z = z;
+
+    if(!has_xy) {
+#if DISPLAY_PREVIEW_3D
+        if(has_z && pv.phase == Pv_Draw && pv.motion && pv.laser && pv.s > 0.0f)
+            pv_depth(x, y, z);      // plunge
+#endif
         return;
+    }
 
     if(pv.motion && pv.laser && pv.s > 0.0f) {
         if(pv.motion == 1)
-            pv_segment(pv.x, pv.y, x, y);
+            pv_segment(pv.x, pv.y, za, x, y, z);
         else {
             // arc around the center (I, J relative to the start), drawn as chords
             float cx = pv.x + i, cy = pv.y + j, r = hypotf(i, j);
@@ -514,13 +636,15 @@ static void pv_execute (void)
             if(pv.motion == 2 && a1 >= a0) a1 -= 2.0f * M_PI;   // clockwise
             if(pv.motion == 3 && a1 <= a0) a1 += 2.0f * M_PI;   // counterclockwise
             int n = (int)(fabsf(a1 - a0) * 180.0f / M_PI / PV_ARC_DEG) + 1;
-            float xa = pv.x, ya = pv.y;
+            float xa = pv.x, ya = pv.y, zc = za;
             for(int k = 1; k <= n; k++) {
                 float a = a0 + (a1 - a0) * k / n;
                 float xb = k == n ? x : cx + r * cosf(a), yb = k == n ? y : cy + r * sinf(a);
-                pv_segment(xa, ya, xb, yb);
+                float zn = za + (z - za) * k / n;   // helix
+                pv_segment(xa, ya, zc, xb, yb, zn);
                 xa = xb;
                 ya = yb;
+                zc = zn;
             }
         }
     }
@@ -537,13 +661,28 @@ static void pv_char (char c)
         if(pv.len)
             pv_execute();
         pv.len = 0;
+#if DISPLAY_PREVIEW_3D
+        if(pv.comment)
+            pv_comment();
+#endif
         pv.comment = false;
-    } else if(c == ';')
-        pv.comment = true;              // rest of the line
-    else if(c == '(')
-        pv.comment = true;
-    else if(c == ')')
+    } else if(c == ';' || c == '(') {
+        pv.comment = true;              // ';': rest of the line
+#if DISPLAY_PREVIEW_3D
+        pv.cmt_len = 0;
+#endif
+    } else if(c == ')') {
         pv.comment = false;
+#if DISPLAY_PREVIEW_3D
+        pv_comment();
+#endif
+    }
+#if DISPLAY_PREVIEW_3D
+    else if(pv.comment) {
+        if(pv.cmt_len < sizeof(pv.cmt) - 1)
+            pv.cmt[pv.cmt_len++] = c >= 'a' && c <= 'z' ? c - 32 : c;
+    }
+#endif
     else if(!pv.comment && c > ' ' && pv.len < sizeof(pv.line) - 1)
         pv.line[pv.len++] = (c >= 'a' && c <= 'z') ? c - 32 : c;
 }
@@ -563,7 +702,13 @@ static void pv_start (const char *name)
         return;
     }
 
-    pv.any = false;
+    pv.any = pv.any_z = false;
+#if DISPLAY_PREVIEW_3D
+    memset(pv.tool_d, 0, sizeof(pv.tool_d));
+    pv.tools = 0;
+    pv.hw = pv.hh = 0;
+    pv.hscale = 0.0f;
+#endif
     pv_reset_parser();
     pv.phase = Pv_Bounds;
 }
@@ -587,10 +732,42 @@ static void pv_poll (sys_state_t state)
                 p += sprintf(p, "%02X", bits[k]);
             send_line(body);
         }
-        if(pv.row == pv.h)
+        if(pv.row == pv.h) {
+#if DISPLAY_PREVIEW_3D
+            if(pv.any_z && pv.hw) {
+                snprintf(body, sizeof(body), "PH,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f", pv.hx0, pv.hy0, pv.hx1, pv.hy1, pv.hw, pv.hh,
+                          pv.dmax);
+                send_line(body);
+                pv.row = 0;
+                pv.phase = Pv_SendDepth;
+                return;
+            }
+#endif
+            pv_stop(pv.h);
+        }
+        return;
+    }
+
+#if DISPLAY_PREVIEW_3D
+    // depth rows in halves: PZ,<row>,<first pixel>,<one hex digit per pixel>
+    if(pv.phase == Pv_SendDepth) {
+        char body[24 + PV_W_MAX / 2];
+        uint16_t half = pv.hw / 2;
+        for(uint_fast8_t n = 0; n < PV_ROWS_CALL * 2 && pv.row < pv.hh * 2; n++, pv.row++) {
+            uint16_t y = pv.row / 2, x0 = (pv.row & 1) ? half : 0, x1 = (pv.row & 1) ? pv.hw : half;
+            char *p = body + sprintf(body, "PZ,%u,%u,", y, x0);
+            for(uint_fast16_t x = x0; x < x1; x++) {
+                uint8_t b = pv.depth[(y * pv.hw + x) >> 1];
+                *p++ = "0123456789ABCDEF"[x & 1 ? b & 0x0F : b >> 4];
+            }
+            *p = '\0';
+            send_line(body);
+        }
+        if(pv.row == pv.hh * 2)
             pv_stop(pv.h);
         return;
     }
+#endif
 
     char buf[64];
     size_t total = 0, n = 0;
@@ -618,14 +795,34 @@ static void pv_poll (sys_state_t state)
         if(pv.w > PV_W_MAX) pv.w = PV_W_MAX;
         if(pv.h > PV_H_MAX) pv.h = PV_H_MAX;
         memset(pv.bits, 0, sizeof(pv.bits));
+#if DISPLAY_PREVIEW_3D
+        // depth map: the bounds widened by the largest tool radius, with its own scale
+        if(pv.any_z) {
+            float rm = 0.0f;
+            for(int t = 0; t < PV_TOOLS; t++)
+                rm = fmaxf(rm, pv.tool_d[t] * 0.5f);
+            pv.dmax = rm * 2.0f;
+            pv.hx0 = pv.x0 - rm - 1.0f; pv.hx1 = pv.x1 + rm + 1.0f;
+            pv.hy0 = pv.y0 - rm - 1.0f; pv.hy1 = pv.y1 + rm + 1.0f;
+            float hdx = pv.hx1 - pv.hx0, hdy = pv.hy1 - pv.hy0;
+            pv.hscale = fminf((PV_W_MAX - 1) / hdx, (PV_H_MAX - 1) / hdy);
+            pv.hw = ((uint16_t)(hdx * pv.hscale) + 2) & ~1;
+            pv.hh = (uint16_t)(hdy * pv.hscale) + 1;
+            if(pv.hw > PV_W_MAX) pv.hw = PV_W_MAX;
+            if(pv.hh > PV_H_MAX) pv.hh = PV_H_MAX;
+            memset(pv.depth, 0, sizeof(pv.depth));
+        }
+#endif
         vfs_seek(pv.file, 0);
         pv_reset_parser();
         pv.phase = Pv_Draw;
     } else {
-        char body[96];
+        char body[112];
         vfs_close(pv.file);
         pv.file = NULL;
-        snprintf(body, sizeof(body), "PB,%.3f,%.3f,%.3f,%.3f,%u,%u", pv.x0, pv.y0, pv.x1, pv.y1, pv.w, pv.h);
+        int n = snprintf(body, sizeof(body), "PB,%.3f,%.3f,%.3f,%.3f,%u,%u", pv.x0, pv.y0, pv.x1, pv.y1, pv.w, pv.h);
+        if(pv.any_z)
+            snprintf(body + n, sizeof(body) - n, ",%.3f,%.3f", pv.z0, pv.z1);
         send_line(body);
         pv.row = 0;
         pv.phase = Pv_Send;

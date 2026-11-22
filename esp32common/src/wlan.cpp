@@ -272,6 +272,11 @@ static void update_setup (void)
 
 static void services_start (void)
 {
+    // In the hidden machine network of a bridge nothing of this is used (updates over the SD card or the home
+    // network): no multicast and no listening sockets, less traffic to the WiFi co-processor of the ESP32-P4.
+    if(use_machine())
+        return;
+
     MDNS.begin(host);
 
 #ifdef PIN_SENDER_TX
