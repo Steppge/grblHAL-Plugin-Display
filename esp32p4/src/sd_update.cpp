@@ -20,6 +20,7 @@
 #include "sd_update.h"
 #include "display.h"
 #include "pins.h"
+#include "usb_link.h"
 
 #define GP_FILE         SD_MOUNT "/gamepad.bin"
 #define GP_DONE         SD_MOUNT "/gamepad.done"
@@ -30,6 +31,8 @@
 #define GP_HELLO_MS     8000        // the receiver starts together with the display, it gets this long to answer
 #define GP_ACK_MS       2500        // per block, less than the 3 s after which the receiver gives up (FD,0)
 #define GP_END_MS       8000        // image check at the end
+#define GP_RX_BLOCK     4096        // gpupdate: the PC sends blocks of this size, each acknowledged with "K <bytes>"
+#define GP_RX_MS        3000        // gpupdate: no data this long = given up
 
 #define DIM_PCT     8       // backlight while writing: the picture flickers turquoise meanwhile
 
@@ -69,6 +72,15 @@ static void screen (const char *text, int pct)
     else
         lv_bar_set_value(scr_bar, pct, LV_ANIM_OFF);
     lv_refr_now(NULL);
+}
+
+static void screen_close (void)
+{
+    if(scr_box) {
+        lv_obj_delete(scr_box);
+        scr_box = NULL;
+        lv_obj_invalidate(lv_screen_active());
+    }
 }
 
 static void file_rename (const char *to, const char *from = SD_FILE)
@@ -163,24 +175,20 @@ static void gp_diagnose (long sent, size_t n)
                      : lines ? "" : " - the receiver is silent");
 }
 
-// NULL when done, else why not
-static const char *gp_flash (FILE *f, long size, bool show)
+// The image to the receiver, NULL when done, else why not. running: the UART is already open (usb_link,
+// held meanwhile) and stays open, else it is opened and closed here (at start, before usb_link_begin()).
+static const char *gp_send_image (const uint8_t *img, long size, bool show, bool running)
 {
     char body[32];
-
-    if(size <= 0 || size > GP_MAX)
-        return "file size";
-    uint8_t *img = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
-    if(img == NULL)
-        return "no memory";
-    if(fread(img, 1, size, f) != (size_t)size) {
-        heap_caps_free(img);
-        return "read error";
-    }
     uint32_t crc = esp_rom_crc32_le(0, img, size);
 
-    Serial2.setRxBufferSize(1024);
-    Serial2.begin(GAMEPAD_BAUD, SERIAL_8N1, PIN_GAMEPAD_RX, PIN_GAMEPAD_TX);
+    if(running) {
+        while(Serial2.available())
+            Serial2.read();
+    } else {
+        Serial2.setRxBufferSize(1024);
+        Serial2.begin(GAMEPAD_BAUD, SERIAL_8N1, PIN_GAMEPAD_RX, PIN_GAMEPAD_TX);
+    }
 
     // the receiver may still be starting: ask again every second, by turns with GAMEPAD_BAUD and with the
     // 921600 of receivers before sketch 1.7 (the update to 1.7 itself comes from one of them)
@@ -241,9 +249,80 @@ static const char *gp_flash (FILE *f, long size, bool show)
         Serial.printf("gamepad update: receiver says '%s', %d blocks sent again\n", ans, resends_all);
     }
 
-    Serial2.end();          // usb_link_begin() opens it again
+    if(running)
+        Serial2.updateBaudRate(GAMEPAD_BAUD);
+    else
+        Serial2.end();      // usb_link_begin() opens it again
+    return why;
+}
+
+// NULL when done, else why not
+static const char *gp_flash (FILE *f, long size, bool show)
+{
+    if(size <= 0 || size > GP_MAX)
+        return "file size";
+    uint8_t *img = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if(img == NULL)
+        return "no memory";
+    const char *why = fread(img, 1, size, f) == (size_t)size ? gp_send_image(img, size, show, false) : "read error";
     heap_caps_free(img);
     return why;
+}
+
+void gp_update_console (const char *arg)
+{
+    long size = 0;
+    unsigned long crc = 0;
+
+    if(!GAMEPAD || sscanf(arg, "%ld %lx", &size, &crc) != 2 || size <= 0 || size > GP_MAX) {
+        Serial.println(GAMEPAD ? "gpupdate failed: usage gpupdate <size> <crc32 hex>" : "gpupdate failed: no gamepad");
+        return;
+    }
+    uint8_t *img = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if(img == NULL) {
+        Serial.println("gpupdate failed: no memory");
+        return;
+    }
+
+    // receive in blocks, each acknowledged: the console buffer (16 KB) never runs over
+    Serial.printf("gpupdate ready %u\n", GP_RX_BLOCK);
+    long got = 0;
+    uint32_t last = millis();
+    while(got < size) {
+        int a = Serial.available();
+        if(a <= 0) {
+            if(millis() - last > GP_RX_MS)
+                break;
+            delay(1);
+            continue;
+        }
+        long end = min((got / GP_RX_BLOCK + 1) * GP_RX_BLOCK, size);
+        got += Serial.read(img + got, min((long)a, end - got));
+        last = millis();
+        if(got == end)
+            Serial.printf("K %ld\n", got);
+    }
+
+    const char *why = NULL;
+    if(got < size)
+        why = "no data from the PC";
+    else if(esp_rom_crc32_le(0, img, size) != crc)
+        why = "checksum of the received file";
+    else {
+        Serial.printf("gpupdate: %ld bytes received, updating the gamepad receiver\n", size);
+        usb_link_gamepad_hold(true);
+        screen("Gamepad receiver\n0 %", 0);
+        why = gp_send_image(img, size, true, true);
+        screen(why ? "Gamepad receiver update failed" : "Gamepad receiver updated", -1);
+        delay(why ? 3000 : 1500);
+        screen_close();
+        usb_link_gamepad_hold(false);
+    }
+    heap_caps_free(img);
+    if(why)
+        Serial.printf("gpupdate failed: %s\n", why);
+    else
+        Serial.println("gpupdate done, the receiver restarts");
 }
 
 static void gp_update_check (bool show)

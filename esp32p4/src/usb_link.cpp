@@ -20,6 +20,7 @@
 #include "link.h"
 #include "wlan.h"
 #include "usb_link.h"
+#include "deck.h"
 
 #define BRIDGE_LINK_PORT    5000    // TCP
 #define BRIDGE_GAMEPAD_PORT 5001    // UDP
@@ -122,6 +123,16 @@ static bool net_update (bool wanted)
     return conn;
 }
 
+static volatile bool gp_hold = false, gp_held = false;
+bool gp_log = false;
+
+void usb_link_gamepad_hold (bool on)
+{
+    gp_hold = on;
+    for(uint32_t t0 = millis(); gp_held != on && millis() - t0 < 200; )
+        delay(1);
+}
+
 static void usb_task (void *arg)
 {
     uint8_t buf[256];
@@ -131,6 +142,7 @@ static void usb_task (void *arg)
     uint32_t idle = 1;
 
     for(;;) {
+        gp_held = gp_hold;              // held: this round does not touch the D1 UART
         bool moved = false;             // any data this round: then the next round comes after 1 ms
         bool usb = tud_mounted() && tud_cdc_n_connected(CH_LINK);
         bool wifi = !usb && wifi_machine();     // nothing over WiFi while the cable is in
@@ -179,15 +191,33 @@ static void usb_task (void *arg)
                 tcp.write(buf, n);
         }
 
+#if GAMEPAD && BIGDECK
+        // gamepad receiver radio: off while the PC-Deck mode is shown (receiver sketch 1.9, $PW), said
+        // again every 2 s (a receiver that restarted). Leading \n: ends a line of the controller cut short.
+        static uint32_t pw_last = 0;
+        static int pw_sent = -1;
+        int pw = deck_mode() ? 0 : 1;
+        if(!gp_held && (pw != pw_sent || millis() - pw_last >= 2000)) {
+            char body[8];
+            uint8_t sum = 0;
+            snprintf(body, sizeof(body), "PW,%d", pw);
+            for(const char *c = body; *c; c++)
+                sum ^= (uint8_t)*c;
+            gp_uart.printf("\n$%s*%02X\n", body, sum);
+            pw_sent = pw;
+            pw_last = millis();
+        }
+#endif
+
         // gamepad: controller -> D1 Mini
-        if((n = tud_cdc_n_read(CH_GAMEPAD, buf, sizeof(buf))) > 0 && GAMEPAD) {
+        if((n = tud_cdc_n_read(CH_GAMEPAD, buf, sizeof(buf))) > 0 && GAMEPAD && !gp_held) {
             gp_uart.write(buf, n);
             gp_to_d1 += n;
             moved = true;
         }
         if(udp_open && udp.parsePacket() > 0) {
             int r = udp.read(buf, sizeof(buf));
-            if(r > 0 && GAMEPAD) {
+            if(r > 0 && GAMEPAD && !gp_held) {
                 gp_uart.write(buf, r);
                 gp_to_d1 += r;
             }
@@ -195,11 +225,25 @@ static void usb_task (void *arg)
         }
 
         // gamepad: D1 Mini -> controller, over WiFi one datagram per line
-        int avail = GAMEPAD ? gp_uart.available() : 0;
+        int avail = GAMEPAD && !gp_held ? gp_uart.available() : 0;
         if(avail > 0) {
             moved = true;
             n = gp_uart.read(buf, min((size_t)avail, sizeof(buf)));
             gp_from_d1 += n;
+            if(gp_log) {    // the Bluetooth log of the receiver on the console
+                static char lg[80];
+                static size_t lg_len = 0;
+                for(size_t i = 0; i < n; i++) {
+                    if(buf[i] == '$')
+                        lg_len = 0;
+                    if(buf[i] == '\n') {
+                        if(lg_len > 4 && !memcmp(lg, "$LG,", 4))
+                            Serial.printf("[%lu] D1 %.*s\n", (unsigned long)millis(), (int)lg_len - 1, lg + 1);
+                        lg_len = 0;
+                    } else if(lg_len < sizeof(lg))
+                        lg[lg_len++] = buf[i];
+                }
+            }
             if(usb) {
                 if(tud_cdc_n_connected(CH_GAMEPAD) && tud_cdc_n_write_available(CH_GAMEPAD) >= n) {
                     tud_cdc_n_write(CH_GAMEPAD, buf, n);

@@ -63,7 +63,8 @@ static void shot (void)
 // Settings over the serial console (lower case lines; the PC-Deck app sends upper case ones, see deck.cpp):
 //   ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], status,
 //   mode pc|cnc (only with BIGDECK 1), shot (screen image, see tools/shot.py),
-//   resync (restarts the video output when the picture is shifted sideways)
+//   resync (restarts the video output when the picture is shifted sideways),
+//   gpupdate <size> <crc32> (gamepad receiver firmware, see tools/gp_update.py)
 static void console (char *line)
 {
     {
@@ -110,6 +111,15 @@ static void console (char *line)
             shot();
             return;
         }
+        else if(!strcmp(line, "gplog")) {
+            gp_log = !strcmp(arg, "on");
+            Serial.printf("gamepad log %s\n", gp_log ? "on" : "off");
+            return;
+        }
+        else if(!strcmp(line, "gpupdate")) {
+            gp_update_console(arg);
+            return;
+        }
         else if(!strcmp(line, "resync")) {
             uint32_t t = millis();
             bool ok = display_resync();
@@ -117,7 +127,7 @@ static void console (char *line)
             return;
         }
         else if(strcmp(line, "status")) {
-            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, scan, shot, resync, status");
+            Serial.println("commands: ssid <network>, pass <password>, ota <password>, name <name>, web 0|1|2, wifi on|off, batt [volts], battlog on|off|dump, mode pc|cnc, scan, shot, resync, gplog on|off, gpupdate, status");
             return;
         }
 

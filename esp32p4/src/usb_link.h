@@ -12,3 +12,5 @@ void usb_link_begin (void);
 bool usb_link_mounted (void);       // the bridge has opened the link channel
 link_path_t usb_link_path (void);   // the way the link takes right now
 void usb_link_report (void);        // state and byte counts on the console
+void usb_link_gamepad_hold (bool on);
+extern bool gp_log;                 // $LG lines of the receiver (sketch 1.11) on the console (gplog on|off)   // the task leaves the D1 UART alone (gamepad update while running)
